@@ -25,6 +25,8 @@ export function createAdapter(config = {}) {
   const defaultModel = config.model || process.env.CC_MODEL || "claude-sonnet-4-7";
   const cwd = config.cwd || process.env.CC_CWD || process.env.HOME;
   const permMode = process.env.CC_PERMISSION_MODE || "default";
+  // 串行锁：channel 每轮起一个 claude 子进程，单 bot 多消息并发会堆积过载（群聊连续消息）。仿 claude.js 排队，单 bot 一次只跑一个 claude。
+  let queryQueue = Promise.resolve();
 
   // 单次尝试：建 socket server + script 起 claude + streamQuery 主循环。
   // resume 启动失败（非零退出且未完成握手）→ 置 o.ctx.resumeFailed，由 streamQuery 回退新 session（design §11）。
@@ -205,29 +207,39 @@ export function createAdapter(config = {}) {
     },
 
     async *streamQuery(prompt, sessionId, abortSignal, overrides = {}) {
-      const {
-        requestPermission, model: oModel, effort, permissionMode: oPerm,
-        cwd: oCwd, allowedTools, settingSources, systemAppend,
-      } = overrides;
-      const o = {
-        prompt,
-        model: (oModel && oModel !== "__default__") ? oModel : defaultModel,
-        effort,
-        effectivePerm: oPerm || permMode,
-        effectiveCwd: oCwd || cwd,
-        allowedTools, settingSources, systemAppend, requestPermission, abortSignal,
-        ctx: {},
-      };
+      // 排队等前一个 query 完成（单 bot 一次只跑一个 claude 子进程，防群聊多消息并发堆积）
+      let releaseLock;
+      const myLock = new Promise((r) => { releaseLock = r; });
+      const waitForTurn = queryQueue;
+      queryQueue = myLock;
+      await waitForTurn;
+      try {
+        const {
+          requestPermission, model: oModel, effort, permissionMode: oPerm,
+          cwd: oCwd, allowedTools, settingSources, systemAppend,
+        } = overrides;
+        const o = {
+          prompt,
+          model: (oModel && oModel !== "__default__") ? oModel : defaultModel,
+          effort,
+          effectivePerm: oPerm || permMode,
+          effectiveCwd: oCwd || cwd,
+          allowedTools, settingSources, systemAppend, requestPermission, abortSignal,
+          ctx: {},
+        };
 
-      if (sessionId) {
-        yield* attemptOnce(sessionId, true, o);
-        // resume 启动失败 → 回退新 session（仿 claude.js:559-585 / design §11）
-        if (o.ctx.resumeFailed) {
-          console.log(`[claude-channel] resume ${String(sessionId).slice(0, 8)} failed, retrying as new session`);
+        if (sessionId) {
+          yield* attemptOnce(sessionId, true, o);
+          // resume 启动失败 → 回退新 session（仿 claude.js:559-585 / design §11）
+          if (o.ctx.resumeFailed) {
+            console.log(`[claude-channel] resume ${String(sessionId).slice(0, 8)} failed, retrying as new session`);
+            yield* attemptOnce(randomUUID(), false, o);
+          }
+        } else {
           yield* attemptOnce(randomUUID(), false, o);
         }
-      } else {
-        yield* attemptOnce(randomUUID(), false, o);
+      } finally {
+        releaseLock();
       }
     },
 
