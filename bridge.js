@@ -1623,6 +1623,7 @@ registerCommands(bot, {
   OWNER_ID,
   a2aBus,
   adapters,
+  idleMonitor,
   buildDiscussCommandResult,
   buildResumeHint,
   buildSessionButtonLabel,
@@ -1835,22 +1836,16 @@ async function startBotPolling() {
 
 // ── 注册 TG 命令菜单 ──
 await bot.api.setMyCommands([
-  { command: "help", description: "查看所有命令" },
   { command: "new", description: "开启新会话" },
   { command: "sessions", description: "查看/切换会话" },
-  { command: "model", description: "切换模型" },
-  { command: "effort", description: "切换思考深度" },
-  { command: "status", description: "当前状态" },
-  { command: "dir", description: "切换工作目录" },
-  { command: "verbose", description: "调整输出详细度" },
-  { command: "discuss", description: "控制群聊 Discuss 模式" },
-  { command: "tasks", description: "查看任务队列" },
-  { command: "cron", description: "定时任务管理" },
-  { command: "export", description: "导出群聊上下文为 Markdown" },
-  { command: "doctor", description: "健康检查" },
-  { command: "peek", description: "查看会话最后几条" },
   { command: "resume", description: "恢复指定会话" },
-  { command: "a2a", description: "A2A 跨 bot 状态" },
+  { command: "status", description: "当前状态" },
+  { command: "tasks", description: "查看任务队列" },
+  { command: "export", description: "导出对话为 Markdown" },
+  { command: "doctor", description: "健康检查" },
+  { command: "cancel", description: "中断当前任务" },
+  { command: "cron", description: "定时任务管理" },
+  { command: "help", description: "查看所有命令" },
 ]).catch((e) => console.error("[TG] setMyCommands failed:", e.message));
 
 // ── 启动 ──

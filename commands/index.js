@@ -11,6 +11,7 @@ export function registerCommands(bot, deps) {
     InlineKeyboard,
     a2aBus,
     adapters,
+    idleMonitor,
     buildResumeHint,
     buildDiscussCommandResult,
     buildSessionButtonLabel,
@@ -86,25 +87,19 @@ export function registerCommands(bot, deps) {
     const text = [
       `*Telegram AI Bridge* — ${adapter.icon} ${adapter.label}`,
       "",
-      "📋 *会话管理*",
+      "📋 *会话*",
       "/new — 开启新会话",
       "/sessions — 查看/切换会话",
       "/resume <id> — 恢复指定会话",
-      "/peek \\[n] — 查看会话最后 n 条",
-      "",
-      "⚙️ *设置*",
-      "/model — 切换模型",
-      "/effort — 切换思考深度",
-      "/dir — 切换工作目录",
-      "/verbose \\[0-2] — 输出详细度",
-      "/discuss status|on|off — 控制群聊 Discuss 模式",
       "",
       "📊 *状态*",
       "/status — 当前状态",
-      "/doctor — 健康检查",
       "/tasks — 任务队列",
-      "/a2a — A2A 跨 bot 状态",
-      "/export — 导出群聊上下文为 Markdown 文件",
+      "/export — 导出对话为 Markdown 文件",
+      "/doctor — 健康检查",
+      "",
+      "⏹ *控制*",
+      "/cancel — 中断当前任务",
       "",
       "⏰ *定时*",
       "/cron — 定时任务管理",
@@ -168,6 +163,19 @@ export function registerCommands(bot, deps) {
       await ctx.editMessageText(`🗑 已取消 ${cleared} 条排队消息。`).catch(() => {});
     } else {
       await ctx.answerCallbackQuery({ text: "队列已空" });
+    }
+  });
+
+  // ── /cancel 命令：中断当前任务（等同 Stop 按钮）──
+  bot.command("cancel", async (ctx) => {
+    const chatId = ctx.chat.id;
+    const controller = chatAbortControllers.get(chatId);
+    if (controller) {
+      controller.abort();
+      chatAbortControllers.delete(chatId);
+      await ctx.reply("⏹ 已停止当前任务。");
+    } else {
+      await ctx.reply("没有运行中的任务。");
     }
   });
 
