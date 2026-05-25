@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "bridge",
+  "description": "Local marketplace for tg-bridge-channel's internal channel",
+  "owner": { "name": "AliceLJY" },
+  "plugins": [
+    {
+      "name": "bridge-channel",
+      "description": "Internal channel between bridge adapter and interactive claude CLI",
+      "category": "development",
+      "source": "./bridge-channel"
+    }
+  ]
+}

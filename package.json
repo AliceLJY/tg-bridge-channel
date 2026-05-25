@@ -1,0 +1,98 @@
+{
+  "name": "tg-bridge-channel",
+  "version": "0.1.0",
+  "description": "Self-hosted Telegram bridge for AI coding agents, with an interactive Claude CLI (channel-based) engine adapter and the A2A-TG envelope protocol for multi-agent collaboration in group chats.",
+  "type": "module",
+  "main": "bridge.js",
+  "bin": {
+    "tg-bridge-channel": "start.js"
+  },
+  "files": [
+    "start.js",
+    "bridge.js",
+    "config.js",
+    "sessions.js",
+    "tasks.js",
+    "progress.js",
+    "turn-state.js",
+    "streaming-preview.js",
+    "send-retry.js",
+    "file-ref-protect.js",
+    "flush-gate.js",
+    "rate-limiter.js",
+    "idle-monitor.js",
+    "dir-manager.js",
+    "doctor.js",
+    "markdown-to-tg.js",
+    "output-relay.js",
+    "discuss-mode.js",
+    "group-context-pipeline.js",
+    "telegram-command-routing.js",
+    "shared-context.js",
+    "cron.js",
+    "adapters/",
+    "commands/",
+    "executor/",
+    "agent/",
+    "a2a/",
+    "shared-context/",
+    "scripts/",
+    "launchd/",
+    "docs/",
+    "config.example.json",
+    "README.md",
+    "README_CN.md",
+    "AGENTS.md",
+    "LICENSE"
+  ],
+  "packageManager": "bun@1.3.9",
+  "engines": {
+    "bun": ">=1.3.9"
+  },
+  "homepage": "https://github.com/AliceLJY/tg-bridge-channel",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AliceLJY/tg-bridge-channel.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AliceLJY/tg-bridge-channel/issues"
+  },
+  "keywords": [
+    "telegram",
+    "claude",
+    "claude-code",
+    "codex",
+    "gemini",
+    "ai-agent",
+    "multi-agent",
+    "agent-to-agent",
+    "a2a",
+    "a2a-tg",
+    "channel",
+    "self-hosted",
+    "grammy",
+    "cli",
+    "remote-control",
+    "bun"
+  ],
+  "scripts": {
+    "start": "bun start.js start",
+    "bootstrap": "bun start.js bootstrap",
+    "check": "bun start.js check",
+    "setup": "bun start.js setup",
+    "config": "bun start.js config",
+    "bridge": "bun bridge.js",
+    "agent": "bun agent/server.js",
+    "test": "bun test",
+    "check-configs": "bun scripts/check-configs.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.117",
+    "@openai/codex-sdk": "0.125.0",
+    "croner": "^9.0.0",
+    "google-auth-library": "^9.0.0",
+    "grammy": "^1.40.0",
+    "https-proxy-agent": "^7.0.6",
+    "ioredis": "^5.10.0"
+  }
+}
