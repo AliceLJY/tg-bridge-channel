@@ -190,18 +190,47 @@ export class BgSession {
     try {
       // Race fix:worker spawn 完到真正 ready 接受 prompt 有秒级窗口。
       // 群聊多 bot 同时 spawn 时,先 reply 会丢失。poll daemon.list 看 detail 含 "agent ready"。
-      await this._waitForReady(daemon, opts.readyTimeoutMs || 30000);
+      await this._waitForReady(daemon, opts.readyTimeoutMs || 120000);
       this.tailReader.resetToCurrentEnd();
       const ack = await daemon.reply(this.short, text);
       if (!ack.ok) throw new Error(`reply failed: ${ack.error || "unknown"}`);
-      yield* this.tailReader.readUntilTurnEnd({
+
+      // Fail-open 兜底:如果 5s 没 jsonl 写入,worker 可能还没 ready 接到 reply → 重发一次
+      const tickStart = Date.now();
+      let retried = false;
+      yield* this._tailWithReplyRetry(daemon, text, opts, tickStart, retried);
+    } finally {
+      this.busy = false;
+      this.lastUsed = Date.now();
+    }
+  }
+
+  async* _tailWithReplyRetry(daemon, text, opts, tickStart, retried) {
+    // 内部包一层:期间监测 jsonl 是否在 5s 内有写入,没有就重发 reply 一次
+    const retryAfterMs = 5000;
+    const reader = this.tailReader;
+    let retryTimer = null;
+    if (!retried) {
+      retryTimer = setTimeout(async () => {
+        // 5s 后检查 jsonl size(turn 开始通常 1s 内有 user echo 写入)
+        try {
+          const sz = existsSync(reader.path) ? statSync(reader.path).size : 0;
+          if (sz <= reader.offset) {
+            console.warn(`[BgSession] no jsonl growth in ${retryAfterMs}ms for ${this.short}, re-sending op:reply`);
+            await daemon.reply(this.short, text).catch(() => {});
+          }
+        } catch {}
+      }, retryAfterMs);
+      retryTimer.unref?.();
+    }
+    try {
+      yield* reader.readUntilTurnEnd({
         expectUserText: text,
         abortSignal: opts.abortSignal,
         timeoutMs: opts.timeoutMs || 120000,
       });
     } finally {
-      this.busy = false;
-      this.lastUsed = Date.now();
+      if (retryTimer) clearTimeout(retryTimer);
     }
   }
 
