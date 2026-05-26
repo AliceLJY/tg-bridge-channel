@@ -1,6 +1,0 @@
-{
-  "name": "bridge-channel",
-  "description": "Internal channel between bridge adapter and interactive claude CLI",
-  "version": "0.0.1",
-  "keywords": ["channel", "mcp", "bridge"]
-}
