@@ -4,7 +4,7 @@
 
 **Self-hosted Telegram bridge for AI coding agents — the chat IS the terminal.**
 
-*Drive Claude Code / Codex / Gemini from a Telegram chat, with an interactive Claude CLI (channel-based) engine and the A2A-TG envelope protocol for multi-agent collaboration in group chats.*
+*Drive Claude Code / Codex / Gemini from a Telegram chat, backed by `claude --bg` daemon control RPC for subscription-billed Claude Code sessions, and the A2A-TG envelope protocol for multi-agent collaboration in group chats.*
 
 [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Bun](https://img.shields.io/badge/Runtime-Bun-f9f1e1?logo=bun)](https://bun.sh)
@@ -26,18 +26,20 @@
 
 ## Engine layer
 
-The `claude` backend ships two interchangeable engine implementations, selected at runtime by the `CLAUDE_CHANNEL_ENGINE` environment variable:
+The `claude` backend ships two interchangeable engine implementations, selected at runtime by the `CLAUDE_POOL_ENGINE` environment variable:
 
 | Mode | Implementation | How it works |
 |---|---|---|
 | default | `adapters/claude.js` | Programmatic adapter built on the Claude Agent SDK. |
-| `CLAUDE_CHANNEL_ENGINE=1` | `adapters/claude-channel.js` | Drives an interactive `claude` CLI process through a local MCP channel. |
+| `CLAUDE_POOL_ENGINE=1` | `adapters/cli-pool-adapter.js` | Per-chat `claude --bg` background sessions, driven through the daemon control RPC. |
 
-The channel engine spawns an interactive `claude` process and talks to it through a **local channel plugin** — a Model Context Protocol server modeled on Claude Code's built-in fakechat channel. Inbound Telegram messages reach the CLI as channel notifications; the CLI answers through a `reply` tool; tool-use approvals are routed back to a human who taps Allow/Deny in Telegram.
+The pool engine starts a `claude --bg` session per Telegram chat. Inbound Telegram messages reach the worker through the daemon control socket (`/tmp/cc-daemon-501/<rand>/control.sock`) via `op:reply`, which is the same underlying RPC the agent-view peek panel uses to talk to background sessions. The bridge tails the session's local `.jsonl` file to consume structured user / assistant / tool events back to Telegram.
 
 The backend name stays `claude` in both modes, so all orchestration (`backendName === "claude"` checks for approval / labels / A2A / cron) is unchanged. Switching engines is a per-process environment variable; rolling back is removing it.
 
-> The channel engine uses macOS `script` to provide a PTY (node-pty is not compatible with bun), and activates the channel via `--channels plugin:bridge-channel@bridge`. The channel plugin must be installed from the local marketplace and approved (see `agent/channel-marketplace/`).
+> The pool engine relies on the official `claude` daemon's spare-process pool for cold-start warmup, on `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` for structured output, and on subscription-billed background sessions (per Anthropic's published billing rules for `claude --bg`). It does not require any plugin install.
+
+> An earlier interactive channel-plugin engine (`CLAUDE_CHANNEL_ENGINE=1`) used a Model Context Protocol server modeled on Claude Code's built-in fakechat channel. That engine was removed in May 2026 due to per-message cold-start overhead; see git history (`adapters/claude-channel.js`, `agent/channel-marketplace/`) for the previous implementation.
 
 ## Quick start
 
@@ -53,10 +55,10 @@ cp config.example.json config.json
 bun run start --backend claude --config config.json
 ```
 
-To run the **channel engine**:
+To run the **pool engine** (recommended; subscription-billed background sessions):
 
 ```bash
-CLAUDE_CHANNEL_ENGINE=1 bun run start --backend claude --config config.json
+CLAUDE_POOL_ENGINE=1 bun run start --backend claude --config config.json
 ```
 
 ## Multi-instance
