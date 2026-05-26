@@ -4,7 +4,7 @@
 
 **Self-hosted Telegram bridge for AI coding agents — the chat IS the terminal.**
 
-*Drive Claude Code / Codex / Gemini from a Telegram chat, backed by `claude --bg` daemon control RPC for subscription-billed Claude Code sessions, and the A2A-TG envelope protocol for multi-agent collaboration in group chats.*
+*Drive Claude Code / Codex / Gemini from a Telegram chat, backed by `claude --bg` Agent View background sessions for subscription-billed Claude Code, and the A2A-TG envelope protocol for multi-agent collaboration in group chats.*
 
 [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Bun](https://img.shields.io/badge/Runtime-Bun-f9f1e1?logo=bun)](https://bun.sh)
@@ -30,16 +30,16 @@ The `claude` backend ships two interchangeable engine implementations, selected 
 
 | Mode | Implementation | How it works |
 |---|---|---|
-| default | `adapters/claude.js` | Programmatic adapter built on the Claude Agent SDK. |
-| `CLAUDE_POOL_ENGINE=1` | `adapters/cli-pool-adapter.js` | Per-chat `claude --bg` background sessions, driven through the daemon control RPC. |
+| default | `adapters/claude.js` | Programmatic adapter built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-sdk). |
+| `CLAUDE_POOL_ENGINE=1` | `adapters/cli-pool-adapter.js` | Per-chat `claude --bg` [background sessions](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-view) (Agent View). |
 
-The pool engine starts a `claude --bg` session per Telegram chat. Inbound Telegram messages reach the worker through the daemon control socket (`/tmp/cc-daemon-501/<rand>/control.sock`) via `op:reply`, which is the same underlying RPC the agent-view peek panel uses to talk to background sessions. The bridge tails the session's local `.jsonl` file to consume structured user / assistant / tool events back to Telegram.
+The pool engine starts a `claude --bg` background session per Telegram chat. Each bot is one user driving multiple long-running Agent View sessions; inbound Telegram messages drive the sessions the same way you would from `claude agents` peek-reply, and outbound responses are read back from each session's local Claude Code transcript file.
 
 The backend name stays `claude` in both modes, so all orchestration (`backendName === "claude"` checks for approval / labels / A2A / cron) is unchanged. Switching engines is a per-process environment variable; rolling back is removing it.
 
-> The pool engine relies on the official `claude` daemon's spare-process pool for cold-start warmup, on `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` for structured output, and on subscription-billed background sessions (per Anthropic's published billing rules for `claude --bg`). It does not require any plugin install.
+> The pool engine relies on the official `claude` Agent View infrastructure: the per-user supervisor / spare-process warmup, the local `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` transcript files, and the subscription-usage billing that Anthropic [documents for background sessions](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-view#limitations). It does not install plugins, does not change credentials, and does not bypass any quota — each background session counts toward your Claude subscription usage just like an interactive session you opened yourself.
 
-> An earlier interactive channel-plugin engine (`CLAUDE_CHANNEL_ENGINE=1`) used a Model Context Protocol server modeled on Claude Code's built-in fakechat channel. That engine was removed in May 2026 due to per-message cold-start overhead; see git history (`adapters/claude-channel.js`, `agent/channel-marketplace/`) for the previous implementation.
+> An earlier interactive channel-plugin engine (`CLAUDE_CHANNEL_ENGINE=1`) used a local Model Context Protocol server modeled on Claude Code's built-in fakechat channel. It was removed in May 2026 in favor of the Agent View based pool engine; see git history (`adapters/claude-channel.js`, `agent/channel-marketplace/`) for the previous implementation.
 
 ## Quick start
 

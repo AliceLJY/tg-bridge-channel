@@ -1,7 +1,7 @@
 {
   "name": "tg-bridge-channel",
   "version": "0.1.0",
-  "description": "Self-hosted Telegram bridge for AI coding agents, backed by claude --bg daemon control RPC for subscription-billed Claude Code sessions, and the A2A-TG envelope protocol for multi-agent collaboration in group chats.",
+  "description": "Self-hosted Telegram bridge for AI coding agents, backed by claude --bg Agent View background sessions for subscription-billed Claude Code, and the A2A-TG envelope protocol for multi-agent collaboration in group chats.",
   "type": "module",
   "main": "bridge.js",
   "bin": {
