@@ -9,16 +9,24 @@
 
 import { createAdapter as createClaudeAdapter } from "./claude.js";
 import { createAdapter as createClaudeChannelAdapter } from "./claude-channel.js";
+import { createAdapter as createClaudePoolAdapter } from "./cli-pool-adapter.js";
 import { createAdapter as createCodexAdapter } from "./codex.js";
 import { createAdapter as createGeminiAdapter } from "./gemini.js";
 
-// claude backend 按 env 切引擎实现：默认 SDK（claude.js），CLAUDE_CHANNEL_ENGINE=1 → 交互式 channel 引擎（claude-channel.js）。
-// 关键：backend 名保持 "claude"，bridge.js 所有 `backendName === "claude"` 判断（审批/label/A2A/cron）继续命中，
-// 编排层零改动；引擎选择靠进程级环境变量，回滚 = 删 env。
+// claude backend 按 env 切引擎实现:
+//   CLAUDE_POOL_ENGINE=1     → cli-pool(--bg daemon + op:reply + jsonl tail,2026-05-26 新方案,躲 6-15 计费切换)
+//   CLAUDE_CHANNEL_ENGINE=1  → 交互式 channel 引擎(2026-05 之前主线,one-shot,cold start 5min 卡死)
+//   默认                      → SDK(claude.js,6-15 后会被切到 Agent SDK credit)
+// 关键:backend 名保持 "claude",bridge.js 所有 `backendName === "claude"` 判断(审批/label/A2A/cron)继续命中,
+// 编排层零改动;引擎选择靠进程级环境变量,回滚 = 删 env。
+const USE_POOL_ENGINE = process.env.CLAUDE_POOL_ENGINE === "1";
 const USE_CHANNEL_ENGINE = process.env.CLAUDE_CHANNEL_ENGINE === "1";
 const ADAPTERS = {
-  claude: USE_CHANNEL_ENGINE ? createClaudeChannelAdapter : createClaudeAdapter,
-  "claude-channel": createClaudeChannelAdapter,  // 独立名保留，便于测试/显式选用
+  claude: USE_POOL_ENGINE
+    ? createClaudePoolAdapter
+    : (USE_CHANNEL_ENGINE ? createClaudeChannelAdapter : createClaudeAdapter),
+  "claude-channel": createClaudeChannelAdapter,  // 独立名保留,便于测试/显式选用
+  "claude-pool": createClaudePoolAdapter,        // 独立名保留,便于显式选用
   codex: createCodexAdapter,
   gemini: createGeminiAdapter,
 };
