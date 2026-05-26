@@ -48,9 +48,10 @@ export function getDiscussTargeting({
 }
 
 function stripJsonFence(text) {
-  const trimmed = String(text ?? "").trim();
-  const match = trimmed.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i);
-  return match ? match[1].trim() : trimmed;
+  // 先剥 HTML 注释(claude-buddy 等 MCP 会在末尾注 <!-- buddy: ... -->,污染 JSON-only 契约)
+  const cleaned = String(text ?? "").replace(/<!--[\s\S]*?-->/g, "").trim();
+  const match = cleaned.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i);
+  return match ? match[1].trim() : cleaned;
 }
 
 function fallbackSend(rawText, fallback) {
