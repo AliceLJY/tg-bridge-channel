@@ -1,13 +1,13 @@
 // adapters/cli-pool.js
 // claude --bg daemon control pool — 替代 channel one-shot 引擎
 //
-// 协议来源:2026-05-26 daemon control socket 逆向(详见 ~/Desktop/tg-bridge-channel-最终方案-2026-05-26.md)
-// - control.sock plain JSON line + proto:1 协议
-// - op:reply {short,text} → 给 bg session 发消息(agent view peek panel 同款底层 RPC)
+// 协议参考:claude --bg 暴露的 daemon background sessions(同 Agent View peek panel 走的同一条接口)
+// - daemon control socket:plain JSON line + proto:1
+// - reply {short,text} → 给 bg session 发消息
 // - jsonl 路径 ~/.claude/projects/<encoded-cwd>/<sid>.jsonl,含完整结构化 turn
 //
 // Codex review (DONE_WITH_CONCERNS) 关键 catch 落地:
-// - 半私有接口 → 启动 ping/list 探活 + 版本 allowlist + fallbackAdapter 兜底
+// - 协议契约尚未冻结 → 启动 ping/list 探活 + 版本 allowlist + fallbackAdapter 兜底
 // - 同 chat 必须串行 → BgSession.busy 锁,并发 reply 直接 throw
 // - jsonl 归属 → resetToCurrentEnd 记 byte offset + expectUserText 匹配 user echo + turn_duration 结束
 // - LRU 只驱逐 idle → busy session 跳过,active turn 必须先 abort
@@ -216,7 +216,7 @@ export class BgSession {
         try {
           const sz = existsSync(reader.path) ? statSync(reader.path).size : 0;
           if (sz <= reader.offset) {
-            console.warn(`[BgSession] no jsonl growth in ${retryAfterMs}ms for ${this.short}, re-sending op:reply`);
+            console.warn(`[BgSession] no jsonl growth in ${retryAfterMs}ms for ${this.short}, re-sending reply`);
             await daemon.reply(this.short, text).catch(() => {});
           }
         } catch {}

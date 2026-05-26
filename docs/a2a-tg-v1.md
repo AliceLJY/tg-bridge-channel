@@ -1,7 +1,7 @@
 # A2A-TG v1 — Telegram-native Agent Envelope
 
 > **Status:** draft · 2026-04 · living document
-> **Scope:** the `a2a/` package inside [telegram-ai-bridge](https://github.com/AliceLJY/telegram-ai-bridge)
+> **Scope:** the `a2a/` package inside [tg-bridge-channel](https://github.com/AliceLJY/tg-bridge-channel)
 > **Relation to official A2A:** inspired by, not compatible with. See [§7 Relation to official A2A](#7-relation-to-official-a2a).
 > **中文：** [a2a-tg-v1_CN.md](a2a-tg-v1_CN.md)
 
@@ -9,7 +9,7 @@
 
 The official [A2A protocol](https://a2a-protocol.org) (originally proposed by Google, now a Linux Foundation project) is designed for agent-to-agent interop between *web services* — Agent Cards advertise capabilities at a URL, Tasks carry stateful work units over HTTP/JSON-RPC, and discovery happens through well-known endpoints.
 
-telegram-ai-bridge runs agents inside **IM group chats**, where:
+tg-bridge-channel runs agents inside **IM group chats**, where:
 
 - Peers are few (typically 2-4 bots in one Telegram group) and pre-configured, not discovered
 - Messages are short, high-frequency, conversational, and directly visible to end users
@@ -26,7 +26,7 @@ Forcing the official A2A shape onto this scenario would discard features we actu
 - **Version:** 1 (this document)
 - **On-wire version tag:** `a2a-tg/v1` (current, as of v1.1)
   - *Historical note:* v1.0 shipped with `protocol_version: "a2a/v1"`. v1.1 bumps the on-wire tag to `a2a-tg/v1` so the protocol is self-identifying and cannot be visually confused with official A2A payloads. The validator still accepts the legacy `a2a/v1` tag during a compatibility window (at least two minor versions) and emits a one-time deprecation log per legacy tag — this prevents running bot instances from rejecting each other mid-rollout. Either way, treat envelopes on the `/a2a/message` transport defined below as A2A-TG, not official A2A.
-- **Package path:** `a2a/` inside telegram-ai-bridge
+- **Package path:** `a2a/` inside tg-bridge-channel
 
 ## 2. Envelope
 
@@ -143,7 +143,7 @@ It does **not** call `bus.broadcast()` again. This breaks the ping-pong chain at
 
 ## 6. Dependencies on the rest of the bridge
 
-A2A-TG by itself is an envelope + transport + loop-guard bundle. The following capabilities **belong to telegram-ai-bridge**, not to the protocol:
+A2A-TG by itself is an envelope + transport + loop-guard bundle. The following capabilities **belong to tg-bridge-channel** (the host bridge), not to the protocol:
 
 - Shared-context store (SQLite / JSON / Redis) — how peer bots see each other's replies *before* being @mentioned
 - Telegram filter (reject `chat_id > 0` private chats at both inbound and outbound boundaries)
