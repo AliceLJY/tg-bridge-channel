@@ -188,7 +188,10 @@ export class BgSession {
     if (this.busy) throw new Error(`session ${this.short} busy — bridge 层应排队,不应并发 reply 同 chat`);
     this.busy = true;
     try {
-      this.tailReader.resetToCurrentEnd();   // 锚定本 turn 的起始 byte offset
+      // Race fix:worker spawn 完到真正 ready 接受 prompt 有秒级窗口。
+      // 群聊多 bot 同时 spawn 时,先 reply 会丢失。poll daemon.list 看 detail 含 "agent ready"。
+      await this._waitForReady(daemon, opts.readyTimeoutMs || 30000);
+      this.tailReader.resetToCurrentEnd();
       const ack = await daemon.reply(this.short, text);
       if (!ack.ok) throw new Error(`reply failed: ${ack.error || "unknown"}`);
       yield* this.tailReader.readUntilTurnEnd({
@@ -200,6 +203,25 @@ export class BgSession {
       this.busy = false;
       this.lastUsed = Date.now();
     }
+  }
+
+  async _waitForReady(daemon, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const list = await daemon.list();
+        const job = list.jobs?.find(j => j.short === this.short);
+        if (!job) throw new Error(`worker ${this.short} disappeared from daemon list`);
+        // detail "agent ready; awaiting task instructions" = worker 完成 init 可接 reply
+        // "(idle — send a prompt to start)" 是 launched 但还在 init 的中间态
+        if (job.detail && job.detail.includes("agent ready")) return;
+      } catch (e) {
+        // 暂时性错误,继续 poll
+      }
+      await new Promise(r => setTimeout(r, 300));
+    }
+    // 超时则继续往下走 reply(可能仍然能 work,fail-open)
+    console.warn(`[BgSession] _waitForReady timeout for ${this.short}, proceeding anyway`);
   }
 
   // 现阶段 abort = kill worker。上层 ensureSession 会用 --resume 重起带历史。
