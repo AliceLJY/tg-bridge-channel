@@ -1,4 +1,4 @@
-# telegram-ai-bridge agent rules
+# tg-bridge-channel agent rules
 
 These rules apply to any agent working in this repository.
 
