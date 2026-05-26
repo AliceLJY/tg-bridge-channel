@@ -4,7 +4,7 @@
 
 **自托管的 Telegram AI 编程代理桥 —— 聊天窗口就是终端。**
 
-*在 Telegram 聊天里驱动 Claude Code / Codex / Gemini，引擎层走 `claude --bg` daemon control RPC 拿订阅计费的 Claude Code 会话，并通过 A2A-TG 信封协议支持群聊内多代理协作。*
+*在 Telegram 聊天里驱动 Claude Code / Codex / Gemini，引擎层走 `claude --bg` Agent View 背景会话拿订阅计费的 Claude Code，并通过 A2A-TG 信封协议支持群聊内多代理协作。*
 
 [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Bun](https://img.shields.io/badge/Runtime-Bun-f9f1e1?logo=bun)](https://bun.sh)
@@ -30,16 +30,16 @@
 
 | 模式 | 实现 | 工作方式 |
 |---|---|---|
-| 默认 | `adapters/claude.js` | 基于 Claude Agent SDK 的程序化适配器。 |
-| `CLAUDE_POOL_ENGINE=1` | `adapters/cli-pool-adapter.js` | 每个 Telegram chat 一个 `claude --bg` 后台会话，通过 daemon control RPC 驱动。 |
+| 默认 | `adapters/claude.js` | 基于 [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-sdk) 的程序化适配器。 |
+| `CLAUDE_POOL_ENGINE=1` | `adapters/cli-pool-adapter.js` | 每个 Telegram chat 一个 `claude --bg` [背景会话](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-view)（Agent View）。 |
 
-pool 引擎为每个 Telegram chat 起一个 `claude --bg` 会话。Telegram 入站消息通过 daemon control socket（`/tmp/cc-daemon-501/<rand>/control.sock`）的 `op:reply` 送到 worker —— 这是 agent-view peek panel 跟 background sessions 通信用的同款底层 RPC。bridge 通过 tail 会话的本地 `.jsonl` 文件读结构化的 user / assistant / tool 事件回传 Telegram。
+pool 引擎为每个 Telegram chat 起一个 `claude --bg` 后台会话。每个 bot 是一个用户在驱动多个长跑的 Agent View 会话；Telegram 入站消息驱动 session 的方式跟你在 `claude agents` peek 面板里回复消息是同样的途径，回复内容从每个 session 本地的 Claude Code 对话记录文件读回 Telegram。
 
 两种模式下后端名都保持 `claude`，所以所有编排逻辑（审批 / 标签 / A2A / cron 的 `backendName === "claude"` 判断）不变。切换引擎是进程级环境变量；回滚就是删掉它。
 
-> pool 引擎依赖官方 `claude` daemon 的 spare 进程池做 cold-start 预热，依赖 `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` 读结构化输出，依赖 `claude --bg` 的订阅计费规则（按 Anthropic 公开的计费说明）。不需要安装任何插件。
+> pool 引擎依赖官方 `claude` Agent View 基础设施：每用户的 supervisor / spare 进程预热、本地 `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` 对话记录文件、以及 Anthropic [对背景会话明文规定](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-view#limitations)的订阅计费规则。不安装插件，不改动凭据，不绕过任何配额 —— 每个背景会话计入你的 Claude 订阅用量，跟你自己手开的交互式会话完全等同。
 
-> 之前的交互式 channel-plugin 引擎（`CLAUDE_CHANNEL_ENGINE=1`）通过一个仿照 Claude Code 内置 fakechat channel 的 Model Context Protocol server 驱动。该引擎已于 2026 年 5 月下线，原因是每条消息的 cold-start 开销过高；旧实现见 git history（`adapters/claude-channel.js`、`agent/channel-marketplace/`）。
+> 之前的交互式 channel-plugin 引擎（`CLAUDE_CHANNEL_ENGINE=1`）通过一个仿照 Claude Code 内置 fakechat channel 的本地 Model Context Protocol server 驱动。该引擎已于 2026 年 5 月被基于 Agent View 的 pool 引擎替代；旧实现见 git history（`adapters/claude-channel.js`、`agent/channel-marketplace/`）。
 
 ## 快速开始
 
