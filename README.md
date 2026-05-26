@@ -39,7 +39,7 @@ The backend name stays `claude` in both modes, so all orchestration (`backendNam
 
 > The pool engine relies on the official `claude` Agent View infrastructure: the per-user supervisor / spare-process warmup, the local `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` transcript files, and the subscription-usage billing that Anthropic [documents for background sessions](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-view#limitations). It does not install plugins, does not change credentials, and does not bypass any quota — each background session counts toward your Claude subscription usage just like an interactive session you opened yourself.
 
-> An earlier interactive channel-plugin engine (`CLAUDE_CHANNEL_ENGINE=1`) used a local Model Context Protocol server modeled on Claude Code's built-in fakechat channel. It was removed in May 2026 in favor of the Agent View based pool engine; see git history (`adapters/claude-channel.js`, `agent/channel-marketplace/`) for the previous implementation.
+> An earlier interactive channel-plugin engine (`CLAUDE_CHANNEL_ENGINE=1`) used a local Model Context Protocol server modeled on Claude Code's built-in fakechat channel. It was removed in May 2026 in favor of the Agent View based pool engine; see git history before May 2026 for the channel-plugin engine implementation.
 
 ## Quick start
 
@@ -83,6 +83,12 @@ The inter-bot envelope protocol is specified in [docs/a2a-tg-v1.md](docs/a2a-tg-
 ```bash
 bun test
 ```
+
+## Ecosystem
+
+- [telegram-ai-bridge](https://github.com/AliceLJY/telegram-ai-bridge) — original Telegram bridge using A2A-TG protocol
+- [wechat-ai-bridge](https://github.com/AliceLJY/wechat-ai-bridge) — same idea on WeChat
+- [recallnest](https://github.com/AliceLJY/recallnest) — shared memory MCP across Claude/Codex/Gemini
 
 ## License
 
