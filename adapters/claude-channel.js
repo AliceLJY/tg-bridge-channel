@@ -5,7 +5,8 @@
 import net from "node:net";
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
-import { join } from "path";
+import { mkdirSync, writeFileSync, readFileSync, rmSync, statSync } from "node:fs";
+import { join, dirname } from "path";
 import { homedir, tmpdir } from "os";
 import { listSessionFiles, findSessionFile, parseSessionFile } from "./claude-sessions.js";
 import {
@@ -20,6 +21,92 @@ const CHANNEL_PLUGIN = "bridge-channel";
 const TURN_GRACE_MS = Number(process.env.CHANNEL_TURN_GRACE_MS || 2500);
 // channel server 起来后多久没连上 socket 就认定 channel 没激活（多半未 approve）
 const READY_TIMEOUT_MS = Number(process.env.CHANNEL_READY_TIMEOUT_MS || 30000);
+// channel 连上后（started）claude 若卡死（既不 reply 也不 exit，如卡在工具/网络等待），主循环只剩
+// exited/grace/abort 三出口 → 无限等 → 永久 typing。加总体超时兜底：单轮 attempt 总时长超此值强制收尾+kill。
+// 默认 5min，channel 聊天/任务正常轮次远小于此；长任务可调 CHANNEL_OVERALL_TIMEOUT_MS。必须 > READY_TIMEOUT_MS。
+const OVERALL_TIMEOUT_MS = Number(process.env.CHANNEL_OVERALL_TIMEOUT_MS || 300000);
+// 防呆：OVERALL 必须显著大于 READY，否则 channel ready 后会立刻误触发总体超时；配错时取安全下限。
+const OVERALL_TIMEOUT_EFFECTIVE_MS = OVERALL_TIMEOUT_MS > READY_TIMEOUT_MS ? OVERALL_TIMEOUT_MS : READY_TIMEOUT_MS + 60000;
+
+// 跨进程 cold-start 闸：mccode1/mccode2 等多 bot 进程各有自己的进程内 queryQueue（turn 级串行），
+// 但挡不住跨进程同时 cold start —— 多个 claude 子进程并发初始化十几个 MCP 互抢资源 → 卡死。
+// 用一把 host-wide 原子锁（mkdir 是原子操作）把"同时在 cold start 的 claude 数"限制为 1：
+// spawn 前抢锁，channel ready（过了 MCP 初始化危险区）即释放放行下一个，不等整轮答完。
+const COLDSTART_LOCK_DIR = process.env.CHANNEL_COLDSTART_LOCK_DIR || join(homedir(), ".cache/tg-bridge/coldstart.lock");
+const COLDSTART_LOCK_OWNER = join(COLDSTART_LOCK_DIR, "owner.json");
+// 持锁进程崩溃/卡死不会自动释放 mkdir 锁 → stale。超此值后来者强夺，防一个卡死的 cold start 焊死全队。
+const COLDSTART_LOCK_TTL_MS = Number(process.env.CHANNEL_COLDSTART_LOCK_TTL_MS || 90000);
+// 抢锁最长等待；超过则降级"无锁启动"（宁可退化成并发，也不丢消息/死等）。
+const COLDSTART_LOCK_MAX_WAIT_MS = Number(process.env.CHANNEL_COLDSTART_LOCK_MAX_WAIT_MS || 120000);
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 抢跨进程 cold-start 锁。返回 handle（给 releaseColdStartLock）或 null（降级无锁，不阻塞链路）。
+// 传入 abortSignal：锁等待期间若请求被取消，立即放弃，不白等也不白 spawn。
+async function acquireColdStartLock(abortSignal) {
+  const token = randomUUID();
+  const deadline = Date.now() + COLDSTART_LOCK_MAX_WAIT_MS;
+  try { mkdirSync(dirname(COLDSTART_LOCK_DIR), { recursive: true }); } catch {}
+  while (true) {
+    if (abortSignal?.aborted) return null; // 等待期间请求被取消 → 放弃抢锁
+    try {
+      mkdirSync(COLDSTART_LOCK_DIR); // 原子：抛 EEXIST=已被占，成功=独占
+      // owner.json 仅用于 release 时 token 校验；stale 判断改用锁目录 mtime（见下），不依赖此文件写入时序
+      writeFileSync(COLDSTART_LOCK_OWNER, JSON.stringify({ pid: process.pid, token }));
+      return { token, released: false };
+    } catch (e) {
+      if (e?.code !== "EEXIST") { // 异常 FS 错误：降级无锁，别卡死整条链路
+        console.error(`[claude-channel] cold-start 锁异常，降级无锁启动: ${e?.message}`);
+        return null;
+      }
+      // stale 用锁目录 mtime：mkdir 原子创建即计时起点，避开 mkdir 与写 owner.json 间的非原子窗口
+      // （竞争者在 owner.json 尚未写完时读到空会误判 stale 删锁 → 退化并发）。
+      let lockAge = Infinity;
+      try { lockAge = Date.now() - statSync(COLDSTART_LOCK_DIR).mtimeMs; } catch {}
+      if (lockAge > COLDSTART_LOCK_TTL_MS) { // stale：持锁者多半崩了/卡死，强夺
+        console.error(`[claude-channel] cold-start 锁 stale（age=${Math.round(lockAge / 1000)}s），强制夺锁`);
+        try { rmSync(COLDSTART_LOCK_DIR, { recursive: true, force: true }); } catch {}
+        continue;
+      }
+      if (Date.now() > deadline) {
+        console.error("[claude-channel] cold-start 锁等待超时，降级无锁启动");
+        return null;
+      }
+      await sleep(200 + Math.floor(Math.random() * 300)); // 抖动避免羊群
+    }
+  }
+}
+
+// 释放 cold-start 锁（幂等）。token 校验：只删自己持有的，避免误删 stale 后被他人夺走的锁。
+function releaseColdStartLock(handle) {
+  if (!handle || handle.released) return;
+  handle.released = true;
+  try {
+    const owner = JSON.parse(readFileSync(COLDSTART_LOCK_OWNER, "utf8"));
+    if (owner?.token !== handle.token) return; // 已被 stale 夺走，不是我的锁
+  } catch { /* owner 文件已不在：继续尝试清理目录 */ }
+  try { rmSync(COLDSTART_LOCK_DIR, { recursive: true, force: true }); } catch {}
+}
+
+// 递归杀进程树。child.kill() 只杀 script 父进程，claude 及其 MCP 子进程会残留；
+// 超时/abort/cleanup 时不杀干净 → orphan claude + MCP 累积 → 下一轮更容易堆死。
+function killTree(rootPid, signal = "SIGTERM") {
+  if (!rootPid) return;
+  const pids = [];
+  const queue = [rootPid];
+  while (queue.length) {
+    const pid = queue.shift();
+    pids.push(pid);
+    try {
+      const r = Bun.spawnSync(["pgrep", "-P", String(pid)]);
+      const out = r?.stdout ? new TextDecoder().decode(r.stdout).trim() : "";
+      if (out) for (const c of out.split("\n").map((n) => parseInt(n, 10))) if (c) queue.push(c);
+    } catch {}
+  }
+  for (const pid of [...pids].reverse()) { try { process.kill(pid, signal); } catch {} } // 子先父后
+  const t = setTimeout(() => { for (const pid of pids) { try { process.kill(pid, "SIGKILL"); } catch {} } }, 2000);
+  t.unref?.(); // 别因兜底定时器挂住进程退出
+}
 
 export function createAdapter(config = {}) {
   const defaultModel = config.model || process.env.CC_MODEL || "claude-sonnet-4-7";
@@ -36,6 +123,9 @@ export function createAdapter(config = {}) {
       allowedTools, settingSources, systemAppend, requestPermission, abortSignal, ctx,
     } = o;
     const state = createChannelState(sid);
+    let lockHandle = null; // 跨进程 cold-start 锁 handle；started 时释放，cleanup 兜底
+    let killed = false;    // killTree 幂等：onAbort 和 cleanup 都可能触发，只杀一次
+    let child = null;      // 提前声明，便于 spawn 前早退路径下 cleanup 安全引用
 
     // 1) Unix socket server，等 channel server 回连
     const sockPath = join(tmpdir(), `bridge-ch-${randomUUID()}.sock`);
@@ -70,14 +160,27 @@ export function createAdapter(config = {}) {
     ];
     const spawnArgs = ["script", "-q", "/dev/null", CLAUDE_CLI_PATH, ...args];
     console.error(`[claude-channel] spawn: ${spawnArgs.join(" ")} | cwd=${effectiveCwd}`);
-    const child = Bun.spawn(spawnArgs, {
-      cwd: effectiveCwd,
-      // ENABLE_TOOL_SEARCH=auto:9999：把 tool defer 阈值拉到极高 → 禁掉 ToolSearch。
-      // 否则 bridge claude 继承用户全局十几个 MCP、工具一多就触发 defer，channel 的 reply tool
-      // 被延迟加载、claude 调不到（select failed none found），整个 turn 卡死。
-      env: { ...process.env, BRIDGE_CHANNEL_SOCKET: sockPath, ENABLE_TOOL_SEARCH: process.env.ENABLE_TOOL_SEARCH || "auto:9999" },
-      stdout: "pipe", stderr: "pipe", // 不设 stdin（script 要 TTY，不能 pipe）
-    });
+    // 抢锁前先看请求是否已被取消（锁等待最长 120s，期间不该再为已取消的请求 spawn）
+    if (abortSignal?.aborted) { try { server.close(); } catch {} return; }
+    // 抢跨进程 cold-start 锁：限制同时 cold start 的 claude 数为 1，避免多 bot 并发挤爆 MCP 初始化
+    lockHandle = await acquireColdStartLock(abortSignal);
+    // 抢锁期间被取消 → 释放锁 + 关 server 后早退（finally 也会兜底，这里立即处理更干净）
+    if (abortSignal?.aborted) { releaseColdStartLock(lockHandle); try { server.close(); } catch {} return; }
+    try {
+      child = Bun.spawn(spawnArgs, {
+        cwd: effectiveCwd,
+        // ENABLE_TOOL_SEARCH=auto:9999：把 tool defer 阈值拉到极高 → 禁掉 ToolSearch。
+        // 否则 bridge claude 继承用户全局十几个 MCP、工具一多就触发 defer，channel 的 reply tool
+        // 被延迟加载、claude 调不到（select failed none found），整个 turn 卡死。
+        env: { ...process.env, BRIDGE_CHANNEL_SOCKET: sockPath, ENABLE_TOOL_SEARCH: process.env.ENABLE_TOOL_SEARCH || "auto:9999" },
+        stdout: "pipe", stderr: "pipe", // 不设 stdin（script 要 TTY，不能 pipe）
+      });
+    } catch (spawnErr) {
+      // Bun.spawn 同步抛错（cwd/可执行文件等）：立即释放锁 + 关 server，别让锁泄漏到 stale TTL
+      releaseColdStartLock(lockHandle);
+      try { server.close(); } catch {}
+      throw spawnErr;
+    }
     // 必须持续消费 child.stdout/stderr：script 把 claude 整屏 TUI 写进 stdout，
     // 不读会撑满 pipe buffer → claude 写阻塞 → 进程崩/exit。留尾部用于 exit 非 0 诊断
     // （script 把 claude 的 stderr 合并进了 PTY stdout）。
@@ -88,7 +191,7 @@ export function createAdapter(config = {}) {
     let exited = false, exitCode = 0;
     child.exited.then(code => { exited = true; exitCode = code ?? 0; wake(); });
     // 注：child.kill() 杀的是 script 父进程；claude 是其子。Task 8 需 live abort 测试确认无 orphan claude。
-    const onAbort = () => { try { child.kill(); } catch {} };
+    const onAbort = () => { if (child && !killed) { killed = true; try { killTree(child.pid); } catch {} } };
     if (abortSignal) abortSignal.addEventListener("abort", onAbort, { once: true });
 
     // 3) 主循环：消费 channel→adapter 消息 → yield 事件；reply 后 grace 判 turn-done
@@ -100,7 +203,8 @@ export function createAdapter(config = {}) {
     const cleanup = () => {
       if (graceTimer) clearTimeout(graceTimer);
       if (abortSignal) abortSignal.removeEventListener("abort", onAbort);
-      try { child.kill(); } catch {}
+      releaseColdStartLock(lockHandle); // 没走到 started 就收尾时兜底释放，别焊死后面的 bot
+      if (child && !killed) { killed = true; try { killTree(child.pid); } catch {} }
       try { server.close(); } catch {}
       try { channelSock?.end(); } catch {}
     };
@@ -119,6 +223,8 @@ export function createAdapter(config = {}) {
               type: "user_message", content: prompt, meta: { chat_id: "bridge" },
             }) + "\n");
             started = true;
+            // channel 已连上 = 过了 MCP 冷启动危险区，立刻释放 cold-start 锁，放行下一个 bot（不等整轮答完）
+            releaseColdStartLock(lockHandle); lockHandle = null;
           } else if (msg.type === "permission_request") {
             for (const ev of mapChannelMessage(msg, state)) yield ev;
             // 审批：bypass 直接放行；否则交编排层（真人在 TG 点）；handler 异常或缺失 → 安全拒
@@ -169,6 +275,12 @@ export function createAdapter(config = {}) {
         }
         if (!started && Date.now() - startTime > READY_TIMEOUT_MS) {
           throw new Error("channel server 未在超时内连接：channel 可能未激活或未 approve（见 design doc §19.3）");
+        }
+        // started 后兜底：claude 连上 channel 却卡死（无 reply 无 exit）→ 超总体时长强制中断，杜绝永久 typing
+        if (started && Date.now() - startTime > OVERALL_TIMEOUT_EFFECTIVE_MS) {
+          console.error(`[claude-channel] 单轮超 ${Math.round(OVERALL_TIMEOUT_EFFECTIVE_MS / 1000)}s 未完成，强制中断 session ${String(sid).slice(0, 8)}`);
+          yield* finalizeChannel(state, { success: false, errorText: `单轮超时（>${Math.round(OVERALL_TIMEOUT_EFFECTIVE_MS / 1000)}s）未完成，已中断，可重发` });
+          return;
         }
 
         // 挂起等下一条消息/退出/grace；50ms tick 兜底竞态（仿 executor/local-agent.js）
