@@ -26,7 +26,15 @@ const DAEMON_PROTO = 1;
 const COMPATIBLE_CLI_VERSIONS = (process.env.CLI_POOL_VERSION_ALLOWLIST || "2.1.150").split(",").map(s => s.trim());
 const ROSTER_PATH = join(homedir(), ".claude/daemon/roster.json");
 const CLAUDE_CLI_PATH = process.env.CLAUDE_CLI_PATH || join(homedir(), ".local/bin/claude");
-const SESSIONS_STORE = process.env.CLI_POOL_STORE || join(homedir(), ".tg-bridge/chat-sessions.json");
+// 每个 bot 独立 store(防止多 bot 同进程不同 PID 互相覆盖 chat-sessions.json)
+// 从 process.argv 抓 --config config-<name>.json 里的 <name> 作为 bot id
+function detectBotId() {
+  if (process.env.CLI_POOL_BOT_ID) return process.env.CLI_POOL_BOT_ID;
+  const args = (process.argv || []).join(" ");
+  const m = args.match(/config-?([\w-]+)\.json/);
+  return m ? m[1] : "default";
+}
+const SESSIONS_STORE = process.env.CLI_POOL_STORE || join(homedir(), `.tg-bridge/chat-sessions-${detectBotId()}.json`);
 const TURN_END_SUBTYPE = "turn_duration";
 
 // ============ utils ============
