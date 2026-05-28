@@ -101,7 +101,10 @@ if (typeof Bun !== "undefined" && PROXY) {
 }
 // [mini-patch] codex 0.121 picker 过滤 source=exec 的 session。
 // bridge 用 SDK 创建的 session 默认被 picker 隐身，每次 save 后把 state DB 里的 exec 改成 cli。
+// 只 codex owner 跑：避免 9 个 bridge 都在 save 后扫整张 state_5.sqlite。
 function patchCodexStateDb() {
+  if ((process.env.DEFAULT_BACKEND || "claude") !== "codex") return;
+  if (process.env.BRIDGE_OWNER !== "true") return;
   try {
     const dbPath = join(process.env.HOME, ".codex", "state_5.sqlite");
     if (!existsSync(dbPath)) return;
@@ -1610,7 +1613,12 @@ bot.use((ctx, next) => {
   return next();
 });
 
-startEntrypointPatcher();
+// entrypoint-patch 只 claude owner 跑（避免 9 个 bridge 同扫 5000+ jsonl）
+// owner 通过 plist env BRIDGE_OWNER=true 标记；3 个 owner: MacBook bridge + mini mccode1 + mini mcodex1
+// 见 ~/.claude/skills/bot-doctor/learnings.md
+if (DEFAULT_BACKEND === "claude" && process.env.BRIDGE_OWNER === "true") {
+  startEntrypointPatcher();
+}
 
 registerCommands(bot, {
   ACTIVE_BACKENDS,
@@ -1835,10 +1843,12 @@ async function startBotPolling() {
 }
 
 // ── 注册 TG 命令菜单 ──
+// 副 bot（BRIDGE_OWNER!=true）菜单不含 /sessions /resume —— 强制走主力 bot 看完整记录
+const IS_BRIDGE_OWNER = process.env.BRIDGE_OWNER === "true";
 await bot.api.setMyCommands([
   { command: "new", description: "开启新会话" },
-  { command: "sessions", description: "查看/切换会话" },
-  { command: "resume", description: "恢复指定会话" },
+  IS_BRIDGE_OWNER && { command: "sessions", description: "查看/切换会话" },
+  IS_BRIDGE_OWNER && { command: "resume", description: "恢复指定会话" },
   { command: "status", description: "当前状态" },
   { command: "tasks", description: "查看任务队列" },
   { command: "export", description: "导出对话为 Markdown" },
@@ -1846,7 +1856,7 @@ await bot.api.setMyCommands([
   { command: "cancel", description: "中断当前任务" },
   { command: "cron", description: "定时任务管理" },
   { command: "help", description: "查看所有命令" },
-]).catch((e) => console.error("[TG] setMyCommands failed:", e.message));
+].filter(Boolean)).catch((e) => console.error("[TG] setMyCommands failed:", e.message));
 
 // ── 启动 ──
 console.log("Telegram-AI-Bridge 启动中...");
