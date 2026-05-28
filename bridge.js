@@ -1513,6 +1513,9 @@ async function processPrompt(ctx, prompt) {
     }
 
     // 新会话首条：显示 session ID（只在新建时发一次）
+    // 所有 bot 都显示——owner 跑的 entrypoint-patch 覆盖整个 cwd 桶，non-owner 写的
+    // jsonl 也会被 patch 成 cli，用户能在终端 `claude --resume <id>` 拉起 non-owner
+    // 的会话。session ID 必须显示给用户，否则无法定位
     if (sessionSaved && capturedSessionId && capturedSessionId !== sessionId) {
       const sid = capturedSessionId;
       const sessionMeta = adapter.resolveSession ? await adapter.resolveSession(sid) : null;
