@@ -23,7 +23,7 @@ import { homedir } from "node:os";
 // ============ 常量 ============
 const DAEMON_PROTO = 1;
 // 实测兼容的 cli 版本(canary allowlist)。新版本启动时不在列表 → fallback 到旧 adapter,避免协议漂移把 bridge 拖崩
-const COMPATIBLE_CLI_VERSIONS = (process.env.CLI_POOL_VERSION_ALLOWLIST || "2.1.150").split(",").map(s => s.trim());
+const COMPATIBLE_CLI_VERSIONS = (process.env.CLI_POOL_VERSION_ALLOWLIST || "2.1.150,2.1.153").split(",").map(s => s.trim());
 const ROSTER_PATH = join(homedir(), ".claude/daemon/roster.json");
 const CLAUDE_CLI_PATH = process.env.CLAUDE_CLI_PATH || join(homedir(), ".local/bin/claude");
 // 每个 bot 独立 store(防止多 bot 同进程不同 PID 互相覆盖 chat-sessions.json)
