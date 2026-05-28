@@ -7,7 +7,10 @@
 // - jsonl 路径 ~/.claude/projects/<encoded-cwd>/<sid>.jsonl,含完整结构化 turn
 //
 // Codex review (DONE_WITH_CONCERNS) 关键 catch 落地:
-// - 协议契约尚未冻结 → 启动 ping/list 探活 + 版本 allowlist + fallbackAdapter 兜底
+// - 协议契约尚未冻结 → 启动 ping/list 探活兜底(2026-05-28 删 CLI version allowlist:
+//   ping/list 通过即协议兼容,CLI version 字符串硬匹配是过保护;Claude Code 隔三差五
+//   patch 升级每次撞墙不可持续。不接 SDK fallback——bridge 走 cli-pool 主线就是为
+//   躲 SDK 6-15 起按 token 计费切换,fallback 到 SDK 等于绕回收费链路)
 // - 同 chat 必须串行 → BgSession.busy 锁,并发 reply 直接 throw
 // - jsonl 归属 → resetToCurrentEnd 记 byte offset + expectUserText 匹配 user echo + turn_duration 结束
 // - LRU 只驱逐 idle → busy session 跳过,active turn 必须先 abort
@@ -22,8 +25,7 @@ import { homedir } from "node:os";
 
 // ============ 常量 ============
 const DAEMON_PROTO = 1;
-// 实测兼容的 cli 版本(canary allowlist)。新版本启动时不在列表 → fallback 到旧 adapter,避免协议漂移把 bridge 拖崩
-const COMPATIBLE_CLI_VERSIONS = (process.env.CLI_POOL_VERSION_ALLOWLIST || "2.1.150,2.1.153").split(",").map(s => s.trim());
+// 协议兼容性靠 ping/list 探活,不再做 CLI version 字符串匹配(见文件头注释)
 const ROSTER_PATH = join(homedir(), ".claude/daemon/roster.json");
 const CLAUDE_CLI_PATH = process.env.CLAUDE_CLI_PATH || join(homedir(), ".local/bin/claude");
 // 每个 bot 独立 store(防止多 bot 同进程不同 PID 互相覆盖 chat-sessions.json)
@@ -271,19 +273,16 @@ export class CliPool {
       cwd: config.cwd || process.env.HOME,
       maxSessions: config.maxSessions || 8,
       idleEvictMs: config.idleEvictMs || 30 * 60 * 1000,
-      fallbackAdapter: config.fallbackAdapter || null,  // 灰度兜底:旧 channel 或 SDK adapter
     };
     this.sessions = new Map();     // chatId -> BgSession
     this.persisted = new Map();    // chatId -> { short, sessionId, cwd, name }
     this.daemon = null;
-    this.ready = false;             // daemon 在 + 版本兼容
-    this.fallbackTriggered = false; // 版本不兼容,显式走 fallback adapter
+    this.ready = false;             // daemon 在 + ping/list 通过
     this.daemonVersion = null;
   }
 
   // start 不强求 daemon 已在 — daemon 可能首次 ensureSession 时被 claude --bg 触发起来。
-  // 把"daemon 在 + 版本兼容"叫做 ready;"daemon 版本不兼容"才叫 fallbackTriggered(走 legacy)。
-  // "daemon 没起"是中间态,等 ensureSession 内 spawn 后 lazy 重试。
+  // "daemon 在 + ping/list 通过"叫 ready;"daemon 没起"是中间态,等 ensureSession 内 spawn 后 lazy 重试。
   async start() {
     this.loadPersisted();
     await this._tryProbe({ silentIfMissing: true });
@@ -302,18 +301,11 @@ export class CliPool {
       const ping = await this.daemon.ping();
       if (!ping.ok) throw new Error(`ping not ok: ${JSON.stringify(ping)}`);
       this.daemonVersion = ping.version;
-      if (!COMPATIBLE_CLI_VERSIONS.includes(this.daemonVersion)) {
-        console.warn(`[cli-pool] daemon v${this.daemonVersion} not in allowlist ${COMPATIBLE_CLI_VERSIONS.join(",")} — will fallback`);
-        this.fallbackTriggered = true;
-        this.ready = false;
-        return;
-      }
       await this.daemon.list();
       this.ready = true;
-      this.fallbackTriggered = false;
       console.log(`[cli-pool] ready, daemon v${this.daemonVersion}`);
     } catch (e) {
-      // ping 失败:daemon 在但临时挂,不算 fallback,下次再试
+      // ping/list 失败:协议或 daemon 临时不可用,下次再试
       console.warn(`[cli-pool] probe err: ${e.message} (will retry on demand)`);
       this.ready = false;
     }
@@ -392,7 +384,6 @@ export class CliPool {
   // 内部如果 daemon 没起,会 spawn 触发(claude --bg 自身就是 daemon trigger),然后 lazy probe
   async ensureSession(chatId) {
     if (this.sessions.has(chatId)) return this.sessions.get(chatId);
-    if (this.fallbackTriggered) throw new Error("cli-pool fallback triggered, ensureSession unavailable");
 
     const info = this.persisted.get(chatId);
     if (info && this.ready) {
@@ -431,10 +422,9 @@ export class CliPool {
 
     // 完全新 session(spawn 同时触发 daemon 启动如果没起)
     const session = await this._spawnBgSession(chatId, { resumeSessionId: info?.sessionId });
-    // spawn 之后 daemon 必在,重 probe 拿到 daemon client + version 校验
+    // spawn 之后 daemon 必在,重 probe 拿 daemon client
     if (!this.ready) {
       await this._tryProbe({ silentIfMissing: false });
-      if (this.fallbackTriggered) throw new Error("daemon version mismatch after spawn");
       if (!this.ready) throw new Error("daemon still not ready after spawning bg session");
     }
     this._updatePersisted(chatId, session);
@@ -469,13 +459,6 @@ export class CliPool {
 
   // ============ 主入口 ============
   async* sendAndStream(chatId, text, opts = {}) {
-    if (this.fallbackTriggered) {
-      if (this.config.fallbackAdapter) {
-        yield* this.config.fallbackAdapter.streamQuery(text, null, opts.abortSignal, opts);
-        return;
-      }
-      throw new Error("cli-pool fallback triggered (version mismatch) and no fallback configured");
-    }
     // daemon 没起也走 ensureSession,内部会 spawn 触发 daemon + lazy probe
     const session = await this.ensureSession(chatId);
     yield* session.sendAndStream(text, this.daemon, opts);
@@ -491,12 +474,10 @@ export class CliPool {
   // adapter wrapper 用:首次没 sessionId 时起新 session,返回真 sessionId
   // pool 内部用真 sessionId 作为 key 持久化
   async newSession(opts = {}) {
-    if (this.fallbackTriggered) throw new Error("cli-pool fallback triggered");
     const tempName = `tg-new-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,6)}`;
     const session = await this._spawnBgSession(tempName, opts);
     if (!this.ready) {
       await this._tryProbe({ silentIfMissing: false });
-      if (this.fallbackTriggered) throw new Error("daemon version mismatch after spawn");
       if (!this.ready) throw new Error("daemon still not ready after spawning bg session");
     }
     // 用真 sessionId 当 key,bridge 后续传 sessionId 就能定位回来
