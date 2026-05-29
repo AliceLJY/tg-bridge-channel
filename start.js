@@ -98,9 +98,13 @@ async function main() {
       console.log("[check] redis=ok");
     }
     if (redisHealth.checked && !redisHealth.ok) {
-      report.errors.push({
+      // Redis 不可用降级为 warning,不再算 fatal error:运行时 shared-context 对 Redis 故障
+      // 已 fail-open(只丢跨 bot 共享可见性,私聊/单 bot 不受影响),启动预检不该因此 exit(1)。
+      // 否则 run-launch-agent.sh 的 `bun run check`(set -e)失败 + plist KeepAlive=true
+      // 会把 bot 拖进崩溃重启循环(bridge-4.log 实录)。
+      report.warnings.push({
         path: "SHARED_CONTEXT_REDIS_URL",
-        message: `Redis ping failed: ${redisHealth.error}`,
+        message: `Redis ping failed (降级运行,跨 bot 共享上下文暂不可用): ${redisHealth.error}`,
       });
     }
     for (const warning of report.warnings) {

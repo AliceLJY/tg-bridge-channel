@@ -1570,7 +1570,15 @@ bot.use((ctx, next) => {
   const isGroupChat = ctx.chat?.type === "group" || ctx.chat?.type === "supergroup";
   // 群聊中：主人可用 @/命令/回复触发；allowlist Discuss 里允许 bot 直接点名当前 bot。
   if (isGroupChat) {
-    if (ctx.callbackQuery) return next();
+    if (ctx.callbackQuery) {
+      // 群聊回调按钮(Stop / resume / queue 等有副作用)必须校验点击人是 owner,
+      // 否则群里任何人点残留按钮即可中断或切换 owner 正在跑的 session(session griefing)。
+      if (ctx.from?.id !== OWNER_ID) {
+        ctx.answerCbQuery?.("仅机主可操作")?.catch(() => {});
+        return;
+      }
+      return next();
+    }
     const text = toTextContent(ctx);
     const botUsername = bot.botInfo?.username;
     const isCommand = text.startsWith("/");

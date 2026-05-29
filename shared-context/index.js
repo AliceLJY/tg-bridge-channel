@@ -28,8 +28,18 @@ export async function initSharedContext(config) {
   backendType = type;
   lastWriteError = null;
   lastReadError = null;
-  await backend.init();
-  console.log(`[shared-context] Backend: ${type}`);
+  try {
+    await backend.init();
+    console.log(`[shared-context] Backend: ${type}`);
+  } catch (error) {
+    // 初始化失败(典型:Redis 不可用)降级为无共享上下文,绝不让整个 bridge 启动崩溃。
+    // 运行时 write/read 见 backend=null 已 fail-open 跳过(只丢跨 bot 可见性,私聊不受影响)。
+    // 否则 bridge.js 顶层 `await initSharedContext` 抛错 → start.js main().catch exit(1)
+    // + plist KeepAlive=true → Redis 一抖动就把 bot 拖进崩溃重启循环(bridge-4.log 实录)。
+    backend = null;
+    lastWriteError = { message: `init failed: ${error.message}`, ts: Date.now() };
+    console.error(`[shared-context] init failed (backend=${type}),降级运行,跨 bot 共享上下文暂不可用: ${error.message}`);
+  }
 }
 
 /**

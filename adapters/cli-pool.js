@@ -190,9 +190,11 @@ export class BgSession {
     if (this.busy) throw new Error(`session ${this.short} busy — bridge 层应排队,不应并发 reply 同 chat`);
     this.busy = true;
     try {
-      // Race fix:worker spawn 完到真正 ready 接受 prompt 有秒级窗口。
-      // 群聊多 bot 同时 spawn 时,先 reply 会丢失。poll daemon.list 看 detail 含 "agent ready"。
-      await this._waitForReady(daemon, opts.readyTimeoutMs || 120000);
+      // Race fix:worker spawn 完到真正 ready 接受 prompt 有秒级窗口,先 reply 可能丢失。
+      // poll daemon.list 等 job.state 就绪(实测 state 才是可靠信号,见 _waitForReady)。
+      // 超时上限 15s 仅作异常封顶:正常 worker 已 running 时首次 poll 即返回,零额外延迟;
+      // 真没就绪也由下方 5s 无写入重发兜底接住(旧默认 120s 因判据失效会每轮白等满 2 分钟)。
+      await this._waitForReady(daemon, opts.readyTimeoutMs || 15000);
       this.tailReader.resetToCurrentEnd();
       const ack = await daemon.reply(this.short, text);
       if (!ack.ok) throw new Error(`reply failed: ${ack.error || "unknown"}`);
@@ -243,15 +245,19 @@ export class BgSession {
         const list = await daemon.list();
         const job = list.jobs?.find(j => j.short === this.short);
         if (!job) throw new Error(`worker ${this.short} disappeared from daemon list`);
-        // detail "agent ready; awaiting task instructions" = worker 完成 init 可接 reply
-        // "(idle — send a prompt to start)" 是 launched 但还在 init 的中间态
+        // 就绪判据(2026-05-29 修):CLI 2.1.156 实测 job.state 是可靠就绪信号,
+        // 新 worker 进 daemon list 即为 "running"(spawn 后 +3ms 实测),detail 恒为空串。
+        //   "running" = 已完成 init 可接 reply;"adopted" = 从前任 supervisor 接管,同样可用。
+        // 旧判据 detail.includes("agent ready") 在该版本 native binary 里此串不存在 → 永不命中
+        //   → 每轮 poll 必走到超时,白等满 timeoutMs(此前默认 120s)。保留 detail 判断作未来 CLI 兼容兜底。
+        if (job.state === "running" || job.state === "adopted") return;
         if (job.detail && job.detail.includes("agent ready")) return;
       } catch (e) {
         // 暂时性错误,继续 poll
       }
       await new Promise(r => setTimeout(r, 300));
     }
-    // 超时则继续往下走 reply(可能仍然能 work,fail-open)
+    // 超时则继续往下走 reply:worker 仍可能可用,且 sendAndStream 内有 5s 无写入重发兜底接住丢失的 reply
     console.warn(`[BgSession] _waitForReady timeout for ${this.short}, proceeding anyway`);
   }
 

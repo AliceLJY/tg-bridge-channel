@@ -96,8 +96,9 @@ export function registerCommands(bot, deps) {
       "",
       "📋 *会话*",
       "/new — 开启新会话",
-      "/sessions — 查看/切换会话",
-      "/resume <id> — 恢复指定会话",
+      ...(IS_OWNER
+        ? ["/sessions — 查看/切换会话", "/resume <id> — 恢复指定会话"]
+        : []),
       "",
       "📊 *状态*",
       "/status — 当前状态",

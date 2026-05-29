@@ -22,7 +22,7 @@
 
 - **Single-agent control** — one Claude Code / Codex / Gemini session per bot, driven over Telegram.
 - **Parallel sessions** — N independent bots in one group, each its own session, with shared context (SQLite/Redis).
-- **Heterogeneous multi-agent collaboration** — Claude, Codex, and Gemini bots talking to each other in a group via the A2A-TG envelope protocol, with generation-counted loop suppression.
+- **Heterogeneous multi-agent collaboration** _(experimental, disabled by default — set `a2aEnabled` to opt in)_ — Claude, Codex, and Gemini bots talking to each other in a group via the A2A-TG envelope protocol, with generation-counted loop suppression.
 
 ## Engine layer
 

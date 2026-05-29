@@ -171,6 +171,13 @@ if [[ -n "$config_path" ]]; then
   config_arg="    <string>$config_path</string>"
 fi
 
+# claude backend 走 cli-pool(--bg daemon)订阅引擎,注入 CLAUDE_POOL_ENGINE=1。
+# 缺这个 env,interface.js 会回退到 6-15 后按 API token 计费的 SDK adapter。codex backend 不需要。
+pool_engine_block=""
+if [[ "$backend" == "claude" ]]; then
+  pool_engine_block="    <key>CLAUDE_POOL_ENGINE</key><string>1</string>"
+fi
+
 mkdir -p "$(dirname "$plist_path")"
 mkdir -p "$(dirname "$log_path")"
 
@@ -193,6 +200,7 @@ sed \
   -e "s/__CONFIG_ARG__/$(escape_replacement "$config_arg")/g" \
   -e "s/__PATH__/$(escape_replacement "$launch_path")/g" \
   -e "s/__BRIDGE_OWNER__/$(escape_replacement "$bridge_owner")/g" \
+  -e "s/__POOL_ENGINE_BLOCK__/$(escape_replacement "$pool_engine_block")/g" \
   -e "s/__LOG__/$(escape_replacement "$log_path")/g" \
   "$TEMPLATE_PATH" > "$plist_path"
 

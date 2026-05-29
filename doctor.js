@@ -28,7 +28,16 @@ export async function runHealthCheck(ctx) {
     if (adapter) {
       try {
         const info = adapter.statusInfo?.();
-        lines.push(`✅ ${adapter.label || name}: ready (${info?.model || "default"})`);
+        // 计费路径体检(🔴 命门):claude backend 走 cli-pool(--bg daemon)=订阅;
+        // 缺 CLAUDE_POOL_ENGINE 会回退 SDK adapter,6-15 后按 API token 计费 → 必须能一眼照出。
+        let billing = "";
+        if (name === "claude") {
+          billing = process.env.CLAUDE_POOL_ENGINE === "1"
+            ? " · 💳 Pool/订阅"
+            : " · ⚠️ SDK/API计费(缺 CLAUDE_POOL_ENGINE)";
+        }
+        const modeStr = info?.mode ? ` [${info.mode}]` : "";
+        lines.push(`✅ ${adapter.label || name}: ready (${info?.model || "default"}${modeStr})${billing}`);
       } catch (e) {
         lines.push(`❌ ${adapter.label || name}: ${e.message}`);
       }
