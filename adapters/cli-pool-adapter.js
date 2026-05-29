@@ -115,7 +115,14 @@ export function createAdapter(config = {}) {
         }
       } catch (e) {
         console.error(`[cli-pool-adapter] streamQuery err sid=${actualSessionId?.slice(0,8)}: ${e.message}`);
-        yield { type: "result", success: false, text: `CC(pool) 出错:${e.message}` };
+        // turn 超时(jsonl tail timeout)≠ worker 已死:超时只 throw 不 kill worker(见 cli-pool.js),
+        // 后台会话可能仍在跑长任务。给 TG 用户可操作的提示,而非裸抛内部错误串让人以为任务丢了。
+        const isTimeout = /tail timeout/.test(e.message || "");
+        const mins = Math.round(Number(process.env.CLI_POOL_TURN_TIMEOUT_MS || 600000) / 60000);
+        const text = isTimeout
+          ? `⏱️ 等待输出超过 ${mins} 分钟。CC 后台会话可能仍在处理这条长任务(并未中断),稍等片刻再发一条消息即可查看进展或继续。`
+          : `CC(pool) 出错:${e.message}`;
+        yield { type: "result", success: false, text };
       }
     },
 

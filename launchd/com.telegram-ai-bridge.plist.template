@@ -24,6 +24,8 @@ __CONFIG_ARG__
     <!-- BRIDGE_OWNER=true 启用 entrypoint-patch / /sessions /resume 等 owner-only 功能 -->
     <key>BRIDGE_OWNER</key>
     <string>__BRIDGE_OWNER__</string>
+    <!-- 计费引擎开关由 installer 按 backend 注入:claude=订阅 cli-pool(--bg daemon),其余 backend 此行留空 -->
+__POOL_ENGINE_BLOCK__
   </dict>
 
   <key>RunAtLoad</key>

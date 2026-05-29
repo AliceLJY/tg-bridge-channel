@@ -260,7 +260,7 @@ export function setSession(
 export function deleteSession(chatId, source = "unknown") {
   // 归档到历史再删除
   const existing = stmtGet.get(chatId);
-  console.log(`[Session Debug] deleteSession(${chatId}) source=${source} existing:`, existing ? `${existing.session_id.slice(0, 8)}...` : "none", new Error().stack?.split("\n").slice(1, 8).join(" ← "));
+  console.log(`[session] deleteSession(${chatId}) source=${source} existing=${existing ? existing.session_id.slice(0, 8) : "none"}`);
   stmtArchive.run(chatId);
   stmtDelete.run(chatId);
 }

@@ -22,7 +22,7 @@
 
 - **单代理控制** —— 每个 bot 一个 Claude Code / Codex / Gemini 会话，通过 Telegram 驱动。
 - **并行会话** —— 一个群里跑 N 个独立 bot，各自独立会话，带共享上下文（SQLite/Redis）。
-- **异构多代理协作** —— Claude、Codex、Gemini bot 在群里通过 A2A-TG 信封协议互相对话，带基于代际计数的环路抑制。
+- **异构多代理协作**（实验性，默认关闭，需置 `a2aEnabled` 开启）—— Claude、Codex、Gemini bot 在群里通过 A2A-TG 信封协议互相对话，带基于代际计数的环路抑制。
 
 ## 引擎层
 
