@@ -137,11 +137,16 @@ export class JsonlTailReader {
   }
 
   async* readUntilTurnEnd({ expectUserText, timeoutMs = 120000, pollMs = 200, abortSignal } = {}) {
-    const deadline = Date.now() + timeoutMs;
+    // 心跳重置语义:timeoutMs 是"jsonl 静默"上限,不是 turn 绝对硬期限。
+    // 每收到新行就把 deadline 推后 timeoutMs。只要 worker 在写,长任务也不会被误判卡死;
+    // 真静默(worker 卡死/SDK hang)才超时。修复前 deadline 在 while 外固定,长任务
+    // (worktree+多文件+rebase)总耗时 >10min 必撞硬墙,reply 投递断,TG 端永远收不到。
+    let deadline = Date.now() + timeoutMs;
     let userEchoSeen = !expectUserText;  // 没提供 expectUserText 时跳过归属检查
     while (Date.now() < deadline) {
       if (abortSignal?.aborted) throw new Error("aborted");
       const lines = await this._readNewLines();
+      if (lines.length > 0) deadline = Date.now() + timeoutMs;  // 心跳:有新行就续命
       for (const line of lines) {
         let d;
         try { d = JSON.parse(line); } catch { continue; }
