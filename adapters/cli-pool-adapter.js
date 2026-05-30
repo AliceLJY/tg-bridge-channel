@@ -47,7 +47,7 @@ function* mapEvents(poolEvent, state) {
 }
 
 export function createAdapter(config = {}) {
-  const defaultModel = config.model || process.env.CC_MODEL || "claude-opus-4-7";
+  const defaultModel = config.model || process.env.CC_MODEL || "opus";
   const defaultEffort = config.effort || process.env.DEFAULT_EFFORT || "max";
   const defaultPermMode = config.permissionMode || process.env.CC_PERMISSION_MODE || "bypassPermissions";
   const defaultCwd = config.cwd || process.env.CC_CWD || process.env.HOME;
@@ -68,9 +68,9 @@ export function createAdapter(config = {}) {
     availableModels() {
       return [
         { id: "__default__", label: `默认 (${defaultModel})` },
-        { id: "claude-opus-4-7", label: "Opus 4.7" },
-        { id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
-        { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+        { id: "opus", label: "Opus 最新" },
+        { id: "sonnet", label: "Sonnet 最新" },
+        { id: "haiku", label: "Haiku 最新" },
       ];
     },
     availableEfforts() {

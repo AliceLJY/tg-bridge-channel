@@ -278,7 +278,7 @@ export class BgSession {
 export class CliPool {
   constructor(config = {}) {
     this.config = {
-      model: config.model || process.env.CC_MODEL || "claude-opus-4-7",
+      model: config.model || process.env.CC_MODEL || "opus",
       effort: config.effort || process.env.DEFAULT_EFFORT || "max",
       permissionMode: config.permissionMode || "bypassPermissions",
       cwd: config.cwd || process.env.HOME,
