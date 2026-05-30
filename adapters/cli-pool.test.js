@@ -5,7 +5,7 @@
 // 测真实行为:真 JsonlTailReader 读真临时 jsonl;_waitForReady 注入 fake daemon。
 
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { writeFileSync, appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { JsonlTailReader, BgSession } from "./cli-pool.js";
@@ -54,6 +54,37 @@ describe("JsonlTailReader.readUntilTurnEnd", () => {
       for await (const _ of reader.readUntilTurnEnd({ expectUserText: "x", pollMs: 10, timeoutMs: 150 })) { /* drain */ }
     } catch (e) { err = e; }
     expect(err?.message).toMatch(/tail timeout/);
+  });
+
+  test("心跳重置:持续 jsonl 增长不撞硬超时(长任务总耗时 > timeoutMs 仍能完成)", async () => {
+    // 起始只有 user 行,timeoutMs=200ms(若不重置 deadline,200ms 必 throw)
+    writeFileSync(path, J({ type: "user", message: { content: "x" } }) + "\n");
+    const reader = new JsonlTailReader(path);
+
+    // 后台每 80ms append 一行,共 5 次(总长 ~400ms >> 200ms timeoutMs)
+    // 前 4 次是 assistant text,第 5 次写 turn_end
+    let n = 0;
+    const interval = setInterval(() => {
+      n++;
+      if (n < 5) {
+        appendFileSync(path, J({ type: "assistant", message: { content: [{ type: "text", text: "tick" + n }] } }) + "\n");
+      } else {
+        appendFileSync(path, J({ type: "system", subtype: "turn_duration", durationMs: 400 }) + "\n");
+        clearInterval(interval);
+      }
+    }, 80);
+
+    const events = [];
+    try {
+      for await (const ev of reader.readUntilTurnEnd({ expectUserText: "x", pollMs: 30, timeoutMs: 200 })) {
+        events.push(ev);
+      }
+    } finally {
+      clearInterval(interval);
+    }
+    const texts = events.filter(e => e.type === "text").map(e => e.text);
+    expect(texts).toEqual(["tick1", "tick2", "tick3", "tick4"]);
+    expect(events[events.length - 1]).toMatchObject({ type: "turn_end", durationMs: 400 });
   });
 
   test("文件截断/轮转(size < offset)时重置 offset", async () => {
