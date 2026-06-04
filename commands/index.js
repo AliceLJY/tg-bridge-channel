@@ -46,6 +46,7 @@ export function registerCommands(bot, deps) {
     mergeSessionsForPicker,
     pendingPermissions,
     rateLimiter,
+    costGuard,
     readSharedMessages,
     recentTasks,
     runHealthCheck,
@@ -102,6 +103,7 @@ export function registerCommands(bot, deps) {
       "",
       "📊 *状态*",
       "/status — 当前状态",
+      "/cost — Claude 花费统计",
       "/tasks — 任务队列",
       "/export — 导出对话为 Markdown 文件",
       "/doctor — 健康检查",
@@ -120,6 +122,23 @@ export function registerCommands(bot, deps) {
     await ctx.reply(text, { parse_mode: "Markdown" }).catch(() => {
       ctx.reply(text.replace(/[*\\]/g, "")).catch(() => {});
     });
+  });
+
+  // ── /cost 命令：查看本机/本会话 Claude 花费（成本熔断守卫）──
+  bot.command("cost", async (ctx) => {
+    const backendName = getBackendName(ctx.chat.id);
+    if (backendName !== "claude") {
+      await ctx.reply("💸 成本统计仅 Claude 后端可用（Codex 不上报花费）。");
+      return;
+    }
+    const s = costGuard.stats(ctx.chat.id);
+    const fmtCap = (cap) => (cap > 0 ? `$${cap.toFixed(2)}` : "不限");
+    const text = [
+      "💸 Claude 花费（本实例，24h 滚动）",
+      `本会话：$${s.chatSpent.toFixed(4)} / ${fmtCap(s.perChatCapUsd)}`,
+      `今日本机：$${s.globalSpent.toFixed(4)} / ${fmtCap(s.dailyCapUsd)}`,
+    ].join("\n");
+    await ctx.reply(text);
   });
 
   // ── /discuss 命令：控制当前群聊 session 的 Discuss 模式 ──
