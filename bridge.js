@@ -42,6 +42,7 @@ import { createA2ABus } from "./a2a/bus.js";
 import { createA2AClaudeOverrides, normalizeA2AToolMode } from "./a2a/tool-mode.js";
 import { createFlushGate } from "./flush-gate.js";
 import { createRateLimiter } from "./rate-limiter.js";
+import { createCostGuard } from "./cost-guard.js";
 import { createDirManager } from "./dir-manager.js";
 import { createIdleMonitor } from "./idle-monitor.js";
 import { createCronManager } from "./cron.js";
@@ -202,6 +203,8 @@ if (process.env.A2A_PEERS) {
 // 限流配置
 const RATE_LIMIT_MAX_REQUESTS = Number(process.env.RATE_LIMIT_MAX_REQUESTS || 10);
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 60000);
+const COST_DAILY_CAP_USD = Number(process.env.COST_DAILY_CAP_USD || 0);
+const COST_PER_CHAT_CAP_USD = Number(process.env.COST_PER_CHAT_CAP_USD || 0);
 
 // Idle 监控配置
 const IDLE_TIMEOUT_MS = Number(process.env.IDLE_TIMEOUT_MS || 1800000);
@@ -384,6 +387,11 @@ if (!ACTIVE_BACKENDS.length) {
 const rateLimiter = createRateLimiter({
   maxRequests: RATE_LIMIT_MAX_REQUESTS,
   windowMs: RATE_LIMIT_WINDOW_MS,
+});
+
+const costGuard = createCostGuard({
+  dailyCapUsd: COST_DAILY_CAP_USD,
+  perChatCapUsd: COST_PER_CHAT_CAP_USD,
 });
 
 const dirManager = createDirManager(CC_CWD);
@@ -1374,6 +1382,8 @@ async function processPrompt(ctx, prompt) {
           const costStr = event.cost != null ? ` 花费 $${event.cost.toFixed(4)}` : "";
           const durStr = event.duration != null ? ` 耗时 ${event.duration}ms` : "";
           console.log(`[${adapter.label}] 结果: ${resultSuccess ? "success" : "error"}${durStr}${costStr}`);
+          // 真实成本回写到熔断守卫（codex 的 event.cost 为 null，record 内部会跳过）
+          if (event.cost != null) costGuard.record(chatId, event.cost);
         }
       }
     } catch (err) {
@@ -1621,6 +1631,16 @@ bot.use((ctx, next) => {
       ctx.reply(`🐌 消息太快了，${retrySec}s 后再试`).catch(() => {});
       return;
     }
+    // 成本熔断（仅 claude backend 有真实成本；codex cost 为 null）
+    if (DEFAULT_BACKEND === "claude" && costGuard.isEnabled()) {
+      const cg = costGuard.precheck(ctx.chat.id);
+      if (!cg.allowed) {
+        const scope = cg.reason === "daily" ? "今日本机" : "本会话";
+        const capEnv = cg.reason === "daily" ? "COST_DAILY_CAP_USD" : "COST_PER_CHAT_CAP_USD";
+        ctx.reply(`💸 ${scope} Claude 花费已达上限 $${cg.spent.toFixed(2)}/$${cg.cap.toFixed(2)}，24h 后重置。要继续临时调高 ${capEnv}。`).catch(() => {});
+        return;
+      }
+    }
   }
   return next();
 });
@@ -1678,6 +1698,7 @@ registerCommands(bot, {
   mergeSessionsForPicker,
   pendingPermissions,
   rateLimiter,
+  costGuard,
   readSharedMessages,
   recentTasks,
   runHealthCheck,

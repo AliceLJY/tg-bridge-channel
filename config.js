@@ -192,6 +192,9 @@ export function createDefaultConfig() {
       // 限流配置
       rateLimitMaxRequests: 10,
       rateLimitWindowMs: 60000,
+      // 成本熔断配置（per-instance，0 = 不限；只对 claude backend 有效）
+      costDailyCapUsd: 0,
+      costPerChatCapUsd: 0,
       // Idle 监控配置
       idleTimeoutMs: 1800000,
       resetOnIdleMs: 0,
@@ -358,6 +361,9 @@ function buildEnvFromConfig(config, backend, configPath) {
     // 限流
     RATE_LIMIT_MAX_REQUESTS: String(shared.rateLimitMaxRequests ?? 10),
     RATE_LIMIT_WINDOW_MS: String(shared.rateLimitWindowMs ?? 60000),
+    // 成本熔断（per-instance，0 = 不限）
+    COST_DAILY_CAP_USD: String(shared.costDailyCapUsd ?? 0),
+    COST_PER_CHAT_CAP_USD: String(shared.costPerChatCapUsd ?? 0),
     // Idle 监控
     IDLE_TIMEOUT_MS: String(shared.idleTimeoutMs ?? 1800000),
     RESET_ON_IDLE_MS: String(shared.resetOnIdleMs ?? 0),

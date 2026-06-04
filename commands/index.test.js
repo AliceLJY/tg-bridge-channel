@@ -14,6 +14,7 @@ describe("command registration", () => {
 
     expect(registered.commands.map((entry) => entry.name)).toEqual([
       "help",
+      "cost",
       "discuss",
       "cancel",
       "new",
