@@ -25,3 +25,4 @@ research.md
 *.db-shm
 *.db-wal
 promo-post.md
+.claude/

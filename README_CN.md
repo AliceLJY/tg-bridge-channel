@@ -74,6 +74,14 @@ CLAUDE_POOL_ENGINE=1 bun run start --backend claude --config config.json
 - `sharedContextBackend` —— `sqlite` 或 `redis`，跨 bot 共享记忆。
 - `a2aEnabled` / `a2aPorts` —— 启用 A2A-TG 跨 bot 消息。
 
+## 安全
+
+`claude --bg` 引擎以 `--permission-mode bypassPermissions` 运行,bot 因此不会卡在权限确认上。为了不让它变成"bot 什么都敢跑",每个 `--bg` worker 启动时都会注入一个 `PreToolUse` 钩子(`scripts/guard-destructive-bash.sh`),硬拦一小撮灾难性、不可逆的 Bash 命令:递归删除 `/`、`~`、`$HOME` 或一级系统目录;`mkfs`;`dd` 写块设备;重定向覆写块设备;fork 炸弹;以及 `shred` 擦除设备。日常命令——包括 `rm -rf node_modules`——一律放行。
+
+钩子通过 `--settings`(inline JSON)按会话注入,不会改动你自己的 `~/.claude/settings.json`。设 `CLI_POOL_DESTRUCTIVE_GUARD=0` 可关闭(对外公开部署不建议关)。
+
+这是"手刹",不是"沙箱":黑名单只挡直白写法,可被混淆命令绕过(`base64 -d | sh`、变量拼接、起子进程等)。要真正隔离,请用容器、独立受限账户,或限定工作目录运行 bot。
+
 ## A2A-TG 协议
 
 跨 bot 信封协议规范见 [docs/a2a-tg-v1_CN.md](docs/a2a-tg-v1_CN.md)。它受官方 [A2A 协议](https://a2a-protocol.org)启发但不兼容；为 IM 场景增加了基于代际的环路抑制和会话域幂等。

@@ -22,12 +22,25 @@ import { readFileSync, writeFileSync, statSync, existsSync, mkdirSync, createRea
 import { createInterface } from "node:readline";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 
 // ============ 常量 ============
 const DAEMON_PROTO = 1;
 // 协议兼容性靠 ping/list 探活,不再做 CLI version 字符串匹配(见文件头注释)
 const ROSTER_PATH = join(homedir(), ".claude/daemon/roster.json");
 const CLAUDE_CLI_PATH = process.env.CLAUDE_CLI_PATH || join(homedir(), ".local/bin/claude");
+// 安全护栏脚本(PreToolUse hook):bypassPermissions 下硬拦灾难性不可逆命令,详见脚本头注释。
+const GUARD_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "guard-destructive-bash.sh");
+// 构造 --settings inline JSON:只注入 PreToolUse/Bash 护栏,不落地文件、不碰用户 ~/.claude/settings.json。
+function buildGuardSettings() {
+  return JSON.stringify({
+    hooks: {
+      PreToolUse: [
+        { matcher: "Bash", hooks: [{ type: "command", command: "bash " + JSON.stringify(GUARD_SCRIPT) }] },
+      ],
+    },
+  });
+}
 // 每个 bot 独立 store(防止多 bot 同进程不同 PID 互相覆盖 chat-sessions.json)
 // 从 process.argv 抓 --config config-<name>.json 里的 <name> 作为 bot id
 function detectBotId() {
@@ -284,6 +297,8 @@ export class CliPool {
       cwd: config.cwd || process.env.HOME,
       maxSessions: config.maxSessions || 8,
       idleEvictMs: config.idleEvictMs || 30 * 60 * 1000,
+      // 危险命令护栏:默认开,设 config.destructiveGuard=false 或 env CLI_POOL_DESTRUCTIVE_GUARD=0 关闭(不建议对外部署关闭)。
+      destructiveGuard: config.destructiveGuard !== false && process.env.CLI_POOL_DESTRUCTIVE_GUARD !== "0",
     };
     this.sessions = new Map();     // chatId -> BgSession
     this.persisted = new Map();    // chatId -> { short, sessionId, cwd, name }
@@ -349,6 +364,8 @@ export class CliPool {
       "--effort", this.config.effort,
       "--permission-mode", this.config.permissionMode,
     ];
+    // bypassPermissions 下仍硬拦灾难命令(删根/家/系统目录、格式化、写块设备、fork 炸弹)。
+    if (this.config.destructiveGuard) args.push("--settings", buildGuardSettings());
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     args.push("");  // 空 prompt:session 起来 idle,等 op:reply 触发首 turn
 
