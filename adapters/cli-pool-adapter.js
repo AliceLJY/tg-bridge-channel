@@ -24,6 +24,7 @@ function ensurePool(initConfig) {
 // 关键:turn_end 时 result.text 必须带本 turn 累积的全文 — bridge 用 result.text 兜底发 TG;
 // 不累积 → bridge 报"无输出"(2026-05-26 实测)。
 function* mapEvents(poolEvent, state) {
+  if (poolEvent.type === "session_init") { yield poolEvent; return; }
   if (poolEvent.type === "user_echo") return;
   if (poolEvent.type === "text") {
     state.accumulatedText += poolEvent.text;
@@ -89,32 +90,19 @@ export function createAdapter(config = {}) {
         await _poolStartPromise.catch(() => {}); // start 错误不阻塞,sendAndStream 内部会再 probe
       }
 
-      let actualSessionId = sessionId;
-
-      // 首次 chat 没 sessionId → 起新 bg session
-      if (!actualSessionId) {
-        try {
-          const session = await pool.newSession({});
-          actualSessionId = session.sessionId;
-          yield { type: "session_init", sessionId: actualSessionId };
-        } catch (e) {
-          console.error(`[cli-pool-adapter] newSession failed: ${e.message}`);
-          throw e;
-        }
-      } else {
-        yield { type: "session_init", sessionId: actualSessionId };
-      }
-
+      // 方案 C:不再先 newSession 起 idle session。直接把 sessionId(可能为空)交给
+      // pool.sendAndStream:有就 --resume fork 续上下文,没有就新建;session_init(fork 出的
+      // 最新 sessionId)由 pool 内部 yield、mapEvents 透传给 bridge 持久化。
       try {
         const turnState = { accumulatedText: "" };
-        for await (const poolEv of pool.sendAndStream(actualSessionId, prompt, {
+        for await (const poolEv of pool.sendAndStream(sessionId || null, prompt, {
           abortSignal,
           timeoutMs: Number(process.env.CLI_POOL_TURN_TIMEOUT_MS || 600000),
         })) {
           for (const ev of mapEvents(poolEv, turnState)) yield ev;
         }
       } catch (e) {
-        console.error(`[cli-pool-adapter] streamQuery err sid=${actualSessionId?.slice(0,8)}: ${e.message}`);
+        console.error(`[cli-pool-adapter] streamQuery err sid=${String(sessionId || "new").slice(0,8)}: ${e.message}`);
         // turn 超时(jsonl tail timeout)≠ worker 已死:超时只 throw 不 kill worker(见 cli-pool.js),
         // 后台会话可能仍在跑长任务。给 TG 用户可操作的提示,而非裸抛内部错误串让人以为任务丢了。
         const isTimeout = /tail timeout/.test(e.message || "");

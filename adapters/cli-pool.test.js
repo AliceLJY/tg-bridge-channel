@@ -8,7 +8,7 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { writeFileSync, appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { JsonlTailReader, BgSession } from "./cli-pool.js";
+import { JsonlTailReader } from "./cli-pool.js";
 
 const J = (o) => JSON.stringify(o);
 
@@ -99,41 +99,7 @@ describe("JsonlTailReader.readUntilTurnEnd", () => {
   });
 });
 
-// fake daemon:按调用次数返回预设 jobs 序列(最后一项重复)
-function fakeDaemon(jobsSequence) {
-  let i = 0;
-  return { list: async () => ({ jobs: jobsSequence[Math.min(i++, jobsSequence.length - 1)] }) };
-}
-const mkSession = (short) => new BgSession({ short, sessionId: "s", cwd: "/tmp", jsonlPath: "/tmp/x.jsonl", name: "n" });
-
-describe("BgSession._waitForReady (state 就绪判据)", () => {
-  test("job.state === 'running' 立即返回(CLI 2.1.156 实测信号)", async () => {
-    const sess = mkSession("abc");
-    const t = Date.now();
-    await sess._waitForReady(fakeDaemon([[{ short: "abc", state: "running", detail: "" }]]), 5000);
-    expect(Date.now() - t).toBeLessThan(500);
-  });
-
-  test("job.state === 'adopted' 也算就绪", async () => {
-    const sess = mkSession("abc");
-    const t = Date.now();
-    await sess._waitForReady(fakeDaemon([[{ short: "abc", state: "adopted", detail: "adopted from previous supervisor" }]]), 5000);
-    expect(Date.now() - t).toBeLessThan(500);
-  });
-
-  test("回归:detail 恒空时仍能就绪(旧 agent-ready 判据会白等满超时)", async () => {
-    const sess = mkSession("abc");
-    const t = Date.now();
-    await sess._waitForReady(fakeDaemon([[{ short: "abc", state: "running", detail: "" }]]), 3000);
-    expect(Date.now() - t).toBeLessThan(500);
-  });
-
-  test("worker 始终不在 list 时 fail-open:等满超时后 proceed,不抛错", async () => {
-    const sess = mkSession("ghost");
-    const t = Date.now();
-    await sess._waitForReady(fakeDaemon([[{ short: "other", state: "running" }]]), 300);
-    const dt = Date.now() - t;
-    expect(dt).toBeGreaterThanOrEqual(250);
-    expect(dt).toBeLessThan(1500);
-  });
-});
+// BgSession._waitForReady / DaemonClient 测试已随 2026-06-10 方案 C 重构删除:
+// 直连 control socket 的 BgSession/DaemonClient 整套被移除,改为 CliPool 每 turn fork spawn
+// (claude --bg --resume + tail jsonl + claude stop)。JsonlTailReader(上方测试)原样复用,
+// 仍是新架构的核心 anti-hang 命门。
