@@ -28,17 +28,27 @@ const ROSTER_PATH = join(homedir(), ".claude/daemon/roster.json");
 const CLAUDE_CLI_PATH = process.env.CLAUDE_CLI_PATH || join(homedir(), ".local/bin/claude");
 // 安全护栏脚本(PreToolUse hook):bypassPermissions 下硬拦灾难性不可逆命令。
 const GUARD_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "guard-destructive-bash.sh");
+// 非交互拦截脚本(PreToolUse hook):硬拦 AskUserQuestion,防 --bg worker 挂起等终端点选。
+// 无条件注入(与 destructiveGuard 开关无关):bridge 永远是非交互环境。
+const BLOCK_ASK_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "block-interactive-ask.sh");
+// 非交互环境系统提示:让模型从源头不调 AskUserQuestion。headless 实测(2026-06-10):加这段后模型
+// 会自主定默认 + 直接完成任务(测B 写出完整正文);而仅靠 hook deny(测A)模型会 recover 成"换文本
+// 再问一遍"、仍停在原地等答。所以 append 是主防线(模型不调),BLOCK_ASK_SCRIPT 的 hook 是兜底
+// 安全网(万一仍调了也拦下、让它 recover、不挂死)。
+const BRIDGE_SYSTEM_NOTE = "你运行在非交互的 Telegram 自动化环境:没有人能在终端点选,调用 AskUserQuestion 会让会话挂起直到超时。请不要调用 AskUserQuestion;遇到本来需要用户选择的地方,自行按合理默认做出决定并继续完成任务(写作类任务的风格/标题/结构等通常已在 skill 中预设,按既定流程推进即可),必要时用一两句话说明你替用户做了哪些假设。";
 const TURN_END_SUBTYPE = "turn_duration";
 
-// 构造 --settings inline JSON:只注入 PreToolUse/Bash 护栏,不落地文件、不碰用户 settings.json。
-function buildGuardSettings() {
-  return JSON.stringify({
-    hooks: {
-      PreToolUse: [
-        { matcher: "Bash", hooks: [{ type: "command", command: "bash " + JSON.stringify(GUARD_SCRIPT) }] },
-      ],
-    },
-  });
+// 构造 --settings inline JSON:注入 PreToolUse hook,不落地文件、不碰用户 settings.json。
+//   - AskUserQuestion 拦截:无条件(bridge 永远非交互,见 BLOCK_ASK_SCRIPT)。
+//   - Bash 危险命令护栏:仅 includeDestructive 时(env CLI_POOL_DESTRUCTIVE_GUARD 控制)。
+function buildSettings(includeDestructive) {
+  const preToolUse = [
+    { matcher: "AskUserQuestion", hooks: [{ type: "command", command: "bash " + JSON.stringify(BLOCK_ASK_SCRIPT) }] },
+  ];
+  if (includeDestructive) {
+    preToolUse.push({ matcher: "Bash", hooks: [{ type: "command", command: "bash " + JSON.stringify(GUARD_SCRIPT) }] });
+  }
+  return JSON.stringify({ hooks: { PreToolUse: preToolUse } });
 }
 
 // ============ utils ============
@@ -114,7 +124,12 @@ export class JsonlTailReader {
             for (const block of c) {
               if (block.type === "text")     yield { type: "text", text: block.text || "" };
               else if (block.type === "thinking") yield { type: "thinking", text: block.thinking || "" };
-              else if (block.type === "tool_use") yield { type: "tool_use", name: block.name, input: block.input, id: block.id };
+              else if (block.type === "tool_use") {
+                // AskUserQuestion 已被 PreToolUse hook 在执行前 block(见 buildSettings + block-interactive-ask.sh),
+                // 它会作为 blocked tool_use 出现在 jsonl、后面紧跟 blocked 的 tool_result,模型据此自主续写正文。
+                // 所以当普通 tool_use yield 即可,绝不能提前 return——否则会截断后续正文(adapter 层会静默跳过它)。
+                yield { type: "tool_use", name: block.name, input: block.input, id: block.id };
+              }
             }
           }
         } else if (t === "system" && d.subtype === TURN_END_SUBTYPE && userEchoSeen) {
@@ -157,7 +172,10 @@ export class CliPool {
       "--effort", this.config.effort,
       "--permission-mode", this.config.permissionMode,
     ];
-    if (this.config.destructiveGuard) args.push("--settings", buildGuardSettings());
+    // 总是注入 settings:至少含 AskUserQuestion 拦截(防非交互挂起);destructiveGuard 开时再加 Bash 护栏。
+    args.push("--settings", buildSettings(this.config.destructiveGuard));
+    // 主防线:系统提示让模型从源头不调 AskUserQuestion、自主推进(见 BRIDGE_SYSTEM_NOTE;hook 是兜底)。
+    args.push("--append-system-prompt", BRIDGE_SYSTEM_NOTE);
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     args.push(text);  // 关键:带 prompt spawn,worker 起来即跑首 turn,无需 op:reply
 
