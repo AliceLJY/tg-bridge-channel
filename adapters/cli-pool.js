@@ -11,6 +11,10 @@
 // 优点:全程只用官方 CLI 子命令(--bg / stop),不直连 daemon socket → 不受 control key 影响。
 // 代价:fork 模式每 turn 带全历史重 spawn(jsonl 会逐 turn 增大),长对话成本递增;
 //   仍走本机订阅登录态(6-15 前不计费;6-15 后 --bg 是否计费见账单实测)。
+// 超时语义(2026-06-11):jsonl 静默超时 ≠ 任务失败。超时路径**不 stop worker**——让它把长任务
+//   跑完、产出继续写进本 turn 的 jsonl;下条消息 --resume 该 sessionId fork 时会继承全部已写内容,
+//   "稍等再发一条即可查看进展"的提示因此成立。正常完成/用户 Stop 仍然用完即停。idle worker
+//   由 daemon 回收兜底。
 //
 // 保留:JsonlTailReader(turn 归属过滤 + 心跳超时 + 截断重置)完全复用。
 // 删除:DaemonClient(reply/list/kill/ping 全直连 control socket)、BgSession(常驻 + reply)、
@@ -49,6 +53,29 @@ function buildSettings(includeDestructive) {
     preToolUse.push({ matcher: "Bash", hooks: [{ type: "command", command: "bash " + JSON.stringify(GUARD_SCRIPT) }] });
   }
   return JSON.stringify({ hooks: { PreToolUse: preToolUse } });
+}
+
+// 构造单 turn 的 claude --bg CLI 参数(不含末尾 prompt)。纯函数,便于测试。
+// per-turn 覆盖优先于 config 默认;model 的 "__default__" 哨兵值视为未覆盖(与 SDK adapter 同语义)。
+export function buildTurnArgs(config, { resumeSessionId, model, effort, systemAppend } = {}) {
+  const safe = String(resumeSessionId || "new").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 8);
+  const name = `tg-turn-${safe}-${Date.now().toString(36)}`;
+  const effectiveModel = model && model !== "__default__" ? model : config.model;
+  const args = [
+    "--bg", "--name", name,
+    "--model", effectiveModel,
+    "--effort", effort || config.effort,
+    "--permission-mode", config.permissionMode,
+  ];
+  // 总是注入 settings:至少含 AskUserQuestion 拦截(防非交互挂起);destructiveGuard 开时再加 Bash 护栏。
+  args.push("--settings", buildSettings(config.destructiveGuard));
+  // 主防线:系统提示让模型从源头不调 AskUserQuestion、自主推进(见 BRIDGE_SYSTEM_NOTE;hook 是兜底)。
+  // 群聊场景 bridge 会传 systemAppend(bridgeHint 文件路径约定 + 上下文框架),拼在固定段之后——
+  // fork 模式每 turn 重新 spawn,所以每 turn 都生效(优于 SDK 引擎只在新 session 生效)。
+  const systemNote = systemAppend ? `${BRIDGE_SYSTEM_NOTE}\n\n${systemAppend}` : BRIDGE_SYSTEM_NOTE;
+  args.push("--append-system-prompt", systemNote);
+  if (resumeSessionId) args.push("--resume", resumeSessionId);
+  return { name, args };
 }
 
 // ============ utils ============
@@ -162,34 +189,31 @@ export class CliPool {
   async stop() { /* no-op:无常驻 worker,daemon 自己回收 idle */ }
 
   // 起一个带 prompt 的 --bg worker;有 resumeSessionId 则 fork 续上下文。
+  // per-turn 覆盖(model/effort/cwd/systemAppend)来自 bridge streamOverrides:/model /effort /dir
+  // 的 chat 级偏好 + 群聊上下文 scaffold + bridgeHint,优先于 pool 级 config 默认。
   // 返回 { short, sessionId, cwd, jsonlPath }
-  async _spawnTurn(text, { resumeSessionId } = {}) {
-    const safe = String(resumeSessionId || "new").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 8);
-    const name = `tg-turn-${safe}-${Date.now().toString(36)}`;
-    const args = [
-      "--bg", "--name", name,
-      "--model", this.config.model,
-      "--effort", this.config.effort,
-      "--permission-mode", this.config.permissionMode,
-    ];
-    // 总是注入 settings:至少含 AskUserQuestion 拦截(防非交互挂起);destructiveGuard 开时再加 Bash 护栏。
-    args.push("--settings", buildSettings(this.config.destructiveGuard));
-    // 主防线:系统提示让模型从源头不调 AskUserQuestion、自主推进(见 BRIDGE_SYSTEM_NOTE;hook 是兜底)。
-    args.push("--append-system-prompt", BRIDGE_SYSTEM_NOTE);
-    if (resumeSessionId) args.push("--resume", resumeSessionId);
+  async _spawnTurn(text, opts = {}) {
+    const { name, args } = buildTurnArgs(this.config, opts);
     args.push(text);  // 关键:带 prompt spawn,worker 起来即跑首 turn,无需 op:reply
+    const spawnCwd = opts.cwd || this.config.cwd;
 
     return new Promise((resolve, reject) => {
-      const child = spawn(CLAUDE_CLI_PATH, args, { cwd: this.config.cwd, stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawn(CLAUDE_CLI_PATH, args, { cwd: spawnCwd, stdio: ["ignore", "pipe", "pipe"] });
       let out = "", err = "";
       child.stdout.on("data", c => out += c);
       child.stderr.on("data", c => err += c);
-      const timer = setTimeout(() => { child.kill(); reject(new Error("spawn timeout (30s)")); }, this.config.spawnTimeoutMs);
+      const timer = setTimeout(() => {
+        child.kill();
+        // worker 可能已被 daemon 创建(CLI 前台被 kill ≠ 后台 worker 死),延迟按 name 反查兜底 stop 防泄漏
+        this._stopByNameLater(name);
+        reject(new Error("spawn timeout (30s)"));
+      }, this.config.spawnTimeoutMs);
       child.on("error", e => { clearTimeout(timer); reject(e); });
       child.on("exit", async () => {
         clearTimeout(timer);
         const m = out.match(/backgrounded\s+·\s+([a-f0-9]{8})/);
         if (!m) {
+          this._stopByNameLater(name);  // 同上:stdout 没给 short id 不代表 worker 没起来
           reject(new Error(`no short id in stdout: ${out.slice(0,200)}; stderr: ${err.slice(0,200)}`));
           return;
         }
@@ -199,14 +223,36 @@ export class CliPool {
           await new Promise(r => setTimeout(r, 250));
           const w = readRoster()?.workers?.[short];
           if (w?.sessionId) {
-            const cwd = w.cwd || this.config.cwd;
+            const cwd = w.cwd || spawnCwd;
             resolve({ short, sessionId: w.sessionId, cwd, jsonlPath: sessionJsonlPath(w.sessionId, cwd) });
             return;
           }
         }
+        this.stopWorker(short).catch(() => {});  // short 已知但 roster 不认:stop 防泄漏再报错
         reject(new Error(`roster did not surface sessionId for short ${short}`));
       });
     });
+  }
+
+  // spawn 失败路径的泄漏兜底:延迟到 roster 同步窗口(实测 ≤5s)之后,按 worker name 反查 short 并 stop。
+  // roster worker 对象无顶层 name,但 dispatch.launch.args 里保留了 --name 值(2026-06-11 实测结构)。
+  _stopByNameLater(name, delayMs = 6000) {
+    setTimeout(() => {
+      try {
+        const workers = readRoster()?.workers || {};
+        for (const [short, w] of Object.entries(workers)) {
+          const launchArgs = w?.dispatch?.launch?.args;
+          if (Array.isArray(launchArgs)) {
+            const i = launchArgs.indexOf("--name");
+            if (i >= 0 && launchArgs[i + 1] === name) {
+              console.warn(`[cli-pool] reaping leaked worker ${short} (name=${name})`);
+              this.stopWorker(short).catch(() => {});
+              return;
+            }
+          }
+        }
+      } catch { /* roster 读不到就算了,daemon idle 回收兜底 */ }
+    }, delayMs).unref?.();
   }
 
   // 官方 stop 子命令清理 worker(不碰 control socket)。
@@ -223,15 +269,23 @@ export class CliPool {
 
   // 主入口:sessionId 有值 → --resume fork 续上下文;无 → 新建。
   // 每 turn yield 最新 sessionId(fork 后会变),bridge 持久化它,下次传回。
+  // opts 透传 per-turn 覆盖:model/effort/cwd/systemAppend(见 _spawnTurn)。
   async* sendAndStream(sessionId, text, opts = {}) {
+    const turnOpts = {
+      resumeSessionId: sessionId || null,
+      model: opts.model,
+      effort: opts.effort,
+      cwd: opts.cwd,
+      systemAppend: opts.systemAppend,
+    };
     let turn;
     try {
-      turn = await this._spawnTurn(text, { resumeSessionId: sessionId || null });
+      turn = await this._spawnTurn(text, turnOpts);
     } catch (e) {
       // resume 的 session 可能已失效/被回收 → 回退新建
       if (sessionId) {
         console.warn(`[cli-pool] resume spawn failed for ${String(sessionId).slice(0,8)} (${e.message}), retrying as new session`);
-        turn = await this._spawnTurn(text, {});
+        turn = await this._spawnTurn(text, { ...turnOpts, resumeSessionId: null });
       } else {
         throw e;
       }
@@ -240,6 +294,10 @@ export class CliPool {
     // fork 出的新 sessionId 暴露给 bridge 更新持久化(下个 turn --resume 它)
     yield { type: "session_init", sessionId: turn.sessionId };
 
+    // 超时不杀 worker(2026-06-11 临床修正):jsonl 静默超时时长任务可能仍在跑,杀掉 = 产出永久丢失,
+    // 而 adapter 发给用户的提示是"并未中断,稍等再发可查看进展"——留 worker 活着,产出继续写进
+    // 本 turn jsonl,下条消息 fork 该 sessionId 时全部继承,提示才成立。正常完成/用户 Stop 仍即停。
+    let sawTimeout = false;
     try {
       const reader = new JsonlTailReader(turn.jsonlPath);
       yield* reader.readUntilTurnEnd({
@@ -247,9 +305,16 @@ export class CliPool {
         abortSignal: opts.abortSignal,
         timeoutMs: opts.timeoutMs || 600000,
       });
+    } catch (e) {
+      if (/tail timeout/.test(e.message || "")) sawTimeout = true;
+      throw e;
     } finally {
-      // 用完即停,worker 不堆积(官方 stop,不碰 control socket)
-      this.stopWorker(turn.short).catch(() => {});
+      if (sawTimeout) {
+        console.warn(`[cli-pool] turn timeout for ${turn.short}: leaving worker alive (output inherited by next fork; daemon reclaims idle worker)`);
+      } else {
+        // 用完即停,worker 不堆积(官方 stop,不碰 control socket)
+        this.stopWorker(turn.short).catch(() => {});
+      }
     }
   }
 

@@ -86,6 +86,16 @@ export function createFlushGate(options = {}) {
     return gates.get(chatId)?.processing || false;
   }
 
+  // 列出仍有缓冲消息的 chat（shutdown 时用：这些消息收到过"会一起处理"的承诺，
+  // 但不跨重启保留，得明确告知用户重发）
+  function listBufferedChats() {
+    const out = [];
+    for (const [chatId, gate] of gates) {
+      if (gate.buffer.length > 0) out.push({ chatId, count: gate.buffer.length });
+    }
+    return out;
+  }
+
   function getPendingCount(chatId) {
     return gates.get(chatId)?.buffer.length || 0;
   }
@@ -103,5 +113,5 @@ export function createFlushGate(options = {}) {
     return count;
   }
 
-  return { enqueue, isProcessing, getPendingCount, clearBuffer };
+  return { enqueue, isProcessing, getPendingCount, clearBuffer, listBufferedChats };
 }

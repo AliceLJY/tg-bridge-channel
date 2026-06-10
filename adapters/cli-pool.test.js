@@ -8,7 +8,7 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { writeFileSync, appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { JsonlTailReader } from "./cli-pool.js";
+import { JsonlTailReader, buildTurnArgs, CliPool } from "./cli-pool.js";
 
 const J = (o) => JSON.stringify(o);
 
@@ -103,3 +103,75 @@ describe("JsonlTailReader.readUntilTurnEnd", () => {
 // 直连 control socket 的 BgSession/DaemonClient 整套被移除,改为 CliPool 每 turn fork spawn
 // (claude --bg --resume + tail jsonl + claude stop)。JsonlTailReader(上方测试)原样复用,
 // 仍是新架构的核心 anti-hang 命门。
+
+describe("buildTurnArgs per-turn overrides(2026-06-11 streamOverrides 透传)", () => {
+  const config = { model: "opus", effort: "max", permissionMode: "bypassPermissions", destructiveGuard: true };
+
+  test("无 overrides 时用 config 默认,不带 --resume", () => {
+    const { args } = buildTurnArgs(config, {});
+    expect(args[args.indexOf("--model") + 1]).toBe("opus");
+    expect(args[args.indexOf("--effort") + 1]).toBe("max");
+    expect(args).not.toContain("--resume");
+  });
+
+  test("model/effort/resume 覆盖生效,__default__ 哨兵视为未覆盖", () => {
+    const { args } = buildTurnArgs(config, { model: "haiku", effort: "low", resumeSessionId: "abc-123" });
+    expect(args[args.indexOf("--model") + 1]).toBe("haiku");
+    expect(args[args.indexOf("--effort") + 1]).toBe("low");
+    expect(args[args.indexOf("--resume") + 1]).toBe("abc-123");
+
+    const { args: args2 } = buildTurnArgs(config, { model: "__default__" });
+    expect(args2[args2.indexOf("--model") + 1]).toBe("opus");
+  });
+
+  test("systemAppend 拼在固定非交互提示之后(两段都要在)", () => {
+    const { args } = buildTurnArgs(config, { systemAppend: "群聊上下文框架说明" });
+    const note = args[args.indexOf("--append-system-prompt") + 1];
+    expect(note).toContain("AskUserQuestion");
+    expect(note).toContain("群聊上下文框架说明");
+    expect(note.indexOf("AskUserQuestion")).toBeLessThan(note.indexOf("群聊上下文框架说明"));
+  });
+});
+
+describe("CliPool.sendAndStream 超时语义(2026-06-11 临床修正:超时不杀 worker)", () => {
+  const J2 = (o) => JSON.stringify(o);
+
+  function makePool(jsonlContent) {
+    const dir = mkdtempSync(join(tmpdir(), "pool-"));
+    const path = join(dir, "s.jsonl");
+    writeFileSync(path, jsonlContent);
+    const pool = new CliPool({ cwd: dir });
+    const stops = [];
+    pool._spawnTurn = async () => ({ short: "fake0001", sessionId: "sess-1", cwd: dir, jsonlPath: path });
+    pool.stopWorker = (short) => { stops.push(short); return Promise.resolve(); };
+    return { pool, stops, dir };
+  }
+
+  test("正常 turn_end → stopWorker 被调(用完即停)", async () => {
+    const { pool, stops, dir } = makePool([
+      J2({ type: "user", message: { content: "hi" } }),
+      J2({ type: "assistant", message: { content: [{ type: "text", text: "ok" }] } }),
+      J2({ type: "system", subtype: "turn_duration", durationMs: 1 }),
+    ].join("\n") + "\n");
+    try {
+      for await (const _ of pool.sendAndStream(null, "hi", { timeoutMs: 2000 })) { /* drain */ }
+      expect(stops).toEqual(["fake0001"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("jsonl tail timeout → 不 stop(worker 留活,产出由下一次 fork 继承)", async () => {
+    const { pool, stops, dir } = makePool(J2({ type: "user", message: { content: "hi" } }) + "\n");
+    let err = null;
+    try {
+      for await (const _ of pool.sendAndStream(null, "hi", { timeoutMs: 150 })) { /* drain */ }
+    } catch (e) {
+      err = e;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    expect(err?.message).toMatch(/tail timeout/);
+    expect(stops).toEqual([]);
+  });
+});

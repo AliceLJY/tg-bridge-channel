@@ -24,6 +24,8 @@
 - **并行会话** —— 一个群里跑 N 个独立 bot，各自独立会话，带共享上下文（SQLite/Redis）。
 - **异构多代理协作**（实验性，默认关闭，需置 `a2aEnabled` 开启）—— Claude、Codex、Gemini bot 在群里通过 A2A-TG 信封协议互相对话，带基于代际计数的环路抑制。
 
+**主路径**（经过日常实际使用打磨的部分）是私聊单代理控制 Claude Code + 下方的 pool 引擎。并行会话和 A2A 协作可用但属实验性质；Gemini 后端和 `local-agent` 执行器是兼容层，实际使用频率低得多。
+
 ## 引擎层
 
 `claude` 后端有两套可互换的引擎实现，运行时由 `CLAUDE_POOL_ENGINE` 环境变量选择：
@@ -31,9 +33,14 @@
 | 模式 | 实现 | 工作方式 |
 |---|---|---|
 | 默认 | `adapters/claude.js` | 基于 [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-sdk) 的程序化适配器。 |
-| `CLAUDE_POOL_ENGINE=1` | `adapters/cli-pool-adapter.js` | 每个 Telegram chat 一个 `claude --bg` [背景会话](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-view)（Agent View）。 |
+| `CLAUDE_POOL_ENGINE=1` | `adapters/cli-pool-adapter.js` | 每个 **turn** 一个 `claude --bg` fork worker，基于[背景会话](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-view)（Agent View）。 |
 
-pool 引擎为每个 Telegram chat 起一个 `claude --bg` 后台会话。每个 bot 是一个用户在驱动多个长跑的 Agent View 会话；Telegram 入站消息驱动 session 的方式跟你在 `claude agents` peek 面板里回复消息是同样的途径，回复内容从每个 session 本地的 Claude Code 对话记录文件读回 Telegram。
+pool 引擎为**每条消息**起一个短命的 `claude --bg` worker：入站 Telegram 消息触发 `claude --bg [--resume <session-id>] "<prompt>"`，fork 出一个继承全部对话历史的新 session，通过 tail 该 session 的本地对话记录文件流式读回输出，turn 结束后停掉 worker。bridge 按 chat 持久化 fork 出的 session id、下条消息继续 resume 它，对话因此跨 turn 连续。每 chat 的 `/model`、`/effort`、`/dir` 偏好和 bridge 的系统提示框架以普通 CLI flag 形式注入每次 spawn。
+
+fork-per-turn 设计的两个实际代价：
+
+- **配额随对话长度递增。** 每个 turn 都带全部历史重新 fork，很长的对话会超线性消耗订阅用量。切换话题时用 `/new` 开新会话。
+- **turn 超时不等于任务被杀。** 长任务超过 `CLI_POOL_TURN_TIMEOUT_MS`（默认 10 分钟）没有新输出时，bridge 报告超时但**刻意不停掉 worker**——任务继续跑、产出继续写进 session 记录，你下一条消息从同一 session fork 时会继承这期间写入的一切。正常完成和 Stop 按钮仍会立即停掉 worker。
 
 两种模式下后端名都保持 `claude`，所以所有编排逻辑（审批 / 标签 / A2A / cron 的 `backendName === "claude"` 判断）不变。切换引擎是进程级环境变量；回滚就是删掉它。
 

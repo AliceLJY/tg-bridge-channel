@@ -1,14 +1,18 @@
 // adapters/cli-pool-adapter.js
-// Wrapper:把 cli-pool(claude --bg + control.sock op:reply + jsonl tail)包成
-// bridge 统一 adapter 接口({ name, streamQuery, statusInfo, listSessions, resolveSession })。
+// Wrapper:把 cli-pool(方案 C:per-turn `claude --bg [--resume] "<prompt>"` fork spawn
+// + jsonl tail 读输出 + `claude stop` 清理)包成 bridge 统一 adapter 接口
+// ({ name, streamQuery, statusInfo, listSessions, resolveSession })。
 //
 // 接口对齐 adapters/claude.js,bridge.js 现有 `backendName === "claude"` 判断不动。
 // 启 env CLAUDE_POOL_ENGINE=1 → bridge 自动选这套引擎(见 adapters/interface.js)。
+// streamOverrides 消费状态(2026-06-11 对齐 SDK adapter):model/effort/cwd/systemAppend 透传到
+// 每次 --bg spawn;requestPermission 不透传——pool 固定 bypassPermissions,安全线是 PreToolUse
+// hook 硬护栏(guard-destructive-bash + block-interactive-ask),不是逐工具审批。
 
 import { createCliPool } from "./cli-pool.js";
 import { listSessionFiles, findSessionFile, parseSessionFile } from "./claude-sessions.js";
 
-// 单例 pool —— 同进程多 chat 共享 daemon connection 和 LRU 池
+// 单例 pool —— 同进程多 chat 共享一套 config 默认值(方案 C 无常驻连接,纯配置容器)
 let _pool = null;
 let _poolStartPromise = null;
 
@@ -62,7 +66,6 @@ export function createAdapter(config = {}) {
     effort: defaultEffort,
     permissionMode: defaultPermMode,
     cwd: defaultCwd,
-    maxSessions: Number(process.env.CLI_POOL_MAX_SESSIONS || 8),
   });
 
   return {
@@ -97,18 +100,23 @@ export function createAdapter(config = {}) {
       // 方案 C:不再先 newSession 起 idle session。直接把 sessionId(可能为空)交给
       // pool.sendAndStream:有就 --resume fork 续上下文,没有就新建;session_init(fork 出的
       // 最新 sessionId)由 pool 内部 yield、mapEvents 透传给 bridge 持久化。
+      // per-turn overrides 透传(2026-06-11):/model /effort /dir 偏好 + systemAppend 落到 CLI flag。
+      const { model, effort, cwd, systemAppend } = overrides;
       try {
         const turnState = { accumulatedText: "" };
         for await (const poolEv of pool.sendAndStream(sessionId || null, prompt, {
           abortSignal,
-          timeoutMs: Number(process.env.CLI_POOL_TURN_TIMEOUT_MS || 600000),
+          timeoutMs: Number(overrides.timeoutMs) || Number(process.env.CLI_POOL_TURN_TIMEOUT_MS || 600000),
+          model, effort, cwd, systemAppend,
         })) {
           for (const ev of mapEvents(poolEv, turnState)) yield ev;
         }
       } catch (e) {
+        // 用户主动 Stop:原样上抛,bridge 的 isUserAbort 路径接住 → 干净的"已取消"而非"出错:aborted"
+        if (abortSignal?.aborted) throw e;
         console.error(`[cli-pool-adapter] streamQuery err sid=${String(sessionId || "new").slice(0,8)}: ${e.message}`);
-        // turn 超时(jsonl tail timeout)≠ worker 已死:超时只 throw 不 kill worker(见 cli-pool.js),
-        // 后台会话可能仍在跑长任务。给 TG 用户可操作的提示,而非裸抛内部错误串让人以为任务丢了。
+        // turn 超时(jsonl tail timeout)≠ worker 已死:超时路径不 stop worker(见 cli-pool.js
+        // sendAndStream finally),后台会话仍在跑长任务、产出会被下一次 fork 继承。提示因此成立。
         const isTimeout = /tail timeout/.test(e.message || "");
         const mins = Math.round(Number(process.env.CLI_POOL_TURN_TIMEOUT_MS || 600000) / 60000);
         const text = isTimeout

@@ -2,8 +2,36 @@
 // /doctor 命令：全面诊断 bridge 运行状态
 
 import { existsSync } from "fs";
+import { execFileSync } from "child_process";
+import { join } from "path";
+import { homedir } from "os";
 import { getSharedContextStatus } from "./shared-context.js";
 import { checkRedisHealth } from "./shared-context/redis-health.js";
+
+// execFileSync 参数数组形式：CLAUDE_CLI_PATH 来自 env，不经 shell 插值，防注入
+function safeExecFile(file, args, cwd) {
+  try {
+    return execFileSync(file, args, { cwd, timeout: 5000, encoding: "utf8" }).trim();
+  } catch {
+    return "";
+  }
+}
+
+// 进程与版本指纹：根治"repo 已 pull 新代码但进程还在跑旧代码"——2026-06-11 mini 部署滞后
+// 事故（修复 push 了 3 小时、进程没重启、用户以为已修）就是它要照出来的
+function buildVersionLines() {
+  const lines = [];
+  const repoSha = safeExecFile("git", ["rev-parse", "--short", "HEAD"], import.meta.dir);
+  const repoDirty = safeExecFile("git", ["status", "--porcelain"], import.meta.dir) ? " (有未提交改动)" : "";
+  const startedAt = new Date(Date.now() - process.uptime() * 1000);
+  const startedStr = startedAt.toLocaleString("zh-CN", { timeZone: "Asia/Singapore", hour12: false });
+  const claudeCli = process.env.CLAUDE_CLI_PATH || join(homedir(), ".local/bin/claude");
+  const ccVersion = safeExecFile(claudeCli, ["--version"]);
+  lines.push(`📌 repo: ${repoSha || "(git 不可用)"}${repoDirty}`);
+  lines.push(`📌 进程启动: ${startedStr}（已运行 ${Math.round(process.uptime() / 60)} 分钟）`);
+  lines.push(`📌 Claude Code: ${ccVersion || "(版本获取失败)"}`);
+  return lines;
+}
 
 export async function runHealthCheck(ctx) {
   const {
@@ -21,6 +49,9 @@ export async function runHealthCheck(ctx) {
   } = ctx;
 
   const lines = ["🩺 *Bridge Health Check*\n"];
+
+  // 0. 进程与版本指纹（部署滞后检测）
+  lines.push(...buildVersionLines());
 
   // 1. Backend 连通性
   for (const name of activeBackends) {
