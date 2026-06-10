@@ -32,6 +32,10 @@ function* mapEvents(poolEvent, state) {
   } else if (poolEvent.type === "thinking") {
     // bridge 当前不展示 thinking,跳过避免污染
   } else if (poolEvent.type === "tool_use") {
+    // AskUserQuestion 在非交互 bridge 里已被 PreToolUse hook 拦截(见 cli-pool.js buildSettings +
+    // scripts/block-interactive-ask.sh):它会作为 blocked tool_use 出现在 jsonl,但工具没真执行、
+    // 模型会自主续写正文。静默跳过,别在 TG 显示一条无意义的"AskUserQuestion"进度。
+    if (poolEvent.name === "AskUserQuestion") return;
     yield { type: "progress", toolName: poolEvent.name, input: poolEvent.input };
     const input = poolEvent.input || {};
     if ((poolEvent.name === "Write" || poolEvent.name === "Edit") && input.file_path) {
