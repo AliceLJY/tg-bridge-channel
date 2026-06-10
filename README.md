@@ -24,6 +24,8 @@
 - **Parallel sessions** — N independent bots in one group, each its own session, with shared context (SQLite/Redis).
 - **Heterogeneous multi-agent collaboration** _(experimental, disabled by default — set `a2aEnabled` to opt in)_ — Claude, Codex, and Gemini bots talking to each other in a group via the A2A-TG envelope protocol, with generation-counted loop suppression.
 
+The **primary, battle-tested path** is single-agent private-chat control of Claude Code via the pool engine below. Parallel sessions and A2A collaboration work but are experimental; the Gemini backend and the `local-agent` executor are compatibility layers that see far less real-world use.
+
 ## Engine layer
 
 The `claude` backend ships two interchangeable engine implementations, selected at runtime by the `CLAUDE_POOL_ENGINE` environment variable:
@@ -31,9 +33,14 @@ The `claude` backend ships two interchangeable engine implementations, selected 
 | Mode | Implementation | How it works |
 |---|---|---|
 | default | `adapters/claude.js` | Programmatic adapter built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-sdk). |
-| `CLAUDE_POOL_ENGINE=1` | `adapters/cli-pool-adapter.js` | Per-chat `claude --bg` [background sessions](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-view) (Agent View). |
+| `CLAUDE_POOL_ENGINE=1` | `adapters/cli-pool-adapter.js` | Per-**turn** `claude --bg` fork workers built on [background sessions](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-view) (Agent View). |
 
-The pool engine starts a `claude --bg` background session per Telegram chat. Each bot is one user driving multiple long-running Agent View sessions; inbound Telegram messages drive the sessions the same way you would from `claude agents` peek-reply, and outbound responses are read back from each session's local Claude Code transcript file.
+The pool engine spawns one short-lived `claude --bg` worker **per turn**: each inbound Telegram message launches `claude --bg [--resume <session-id>] "<prompt>"`, which forks a new session inheriting the full conversation history, streams the reply back by tailing the forked session's local transcript file, and stops the worker when the turn completes. The bridge persists the forked session id per chat and resumes it on the next message, so the conversation stays continuous across turns. Per-chat `/model`, `/effort` and `/dir` preferences plus the bridge's system-prompt scaffold are passed to every spawn as plain CLI flags.
+
+Two practical caveats of the fork-per-turn design:
+
+- **Quota grows with conversation length.** Every turn re-forks the full history, so very long conversations consume subscription usage superlinearly. Start a fresh session (`/new`) when switching topics.
+- **A turn timeout does not kill the task.** If a long-running task produces no transcript output for `CLI_POOL_TURN_TIMEOUT_MS` (default 10 min), the bridge reports a timeout but deliberately leaves the worker running — its output keeps landing in the session transcript, and your next message forks from that same session and inherits everything written in the meantime. Normal completion and the Stop button still stop the worker immediately.
 
 The backend name stays `claude` in both modes, so all orchestration (`backendName === "claude"` checks for approval / labels / A2A / cron) is unchanged. Switching engines is a per-process environment variable; rolling back is removing it.
 

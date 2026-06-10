@@ -570,26 +570,6 @@ function toSource(ctx) {
   return `${prefix}:${username}`;
 }
 
-function estimateTokens(text) {
-  const cjkChars = (text.match(/[\u3400-\u4DBF\u4E00-\u9FFF]/g) || []).length;
-  const wordChars = (text.match(/[A-Za-z0-9_]/g) || []).length;
-  const words = (text.match(/[A-Za-z0-9_]+/g) || []).length;
-  const restChars = Math.max(0, text.length - cjkChars - wordChars);
-  return cjkChars + words + Math.ceil(restChars / 3);
-}
-
-function cleanupContextEntries(entries, nowTs = Date.now()) {
-  const minTs = nowTs - GROUP_CONTEXT_TTL_MS;
-  const active = entries.filter((e) => e.ts >= minTs);
-  while (active.length > GROUP_CONTEXT_MAX_MESSAGES) active.shift();
-  let totalTokens = active.reduce((sum, e) => sum + (e.tokens || estimateTokens(e.text)), 0);
-  while (active.length > 0 && totalTokens > GROUP_CONTEXT_MAX_TOKENS) {
-    const removed = active.shift();
-    totalTokens -= (removed.tokens || estimateTokens(removed.text));
-  }
-  return active;
-}
-
 function isDuplicateTrigger(ctx) {
   if (!ctx.chat?.id || !ctx.message?.message_id) return false;
   const nowTs = Date.now();
@@ -742,9 +722,9 @@ async function tgSendPhoto(chatId, buffer, filename) {
     form.append("chat_id", String(chatId));
     form.append("photo", new Blob([buffer]), filename);
     const url = `https://api.telegram.org/bot${TOKEN}/sendPhoto`;
-    const resp = PROXY
-      ? await fetch(url, { method: "POST", body: form, agent: new HttpsProxyAgent(PROXY) })
-      : await fetch(url, { method: "POST", body: form });
+    // 复用 fetchOptions（bun 用 proxy 字段、node 用 agent）——bun 的 fetch 不认 agent 选项，
+    // 旧写法在 bun 下实际裸连、全靠顶部 fetch-patch 兜底
+    const resp = await fetch(url, { method: "POST", body: form, ...fetchOptions });
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
       const err = new Error(`sendPhoto ${resp.status}: ${body.slice(0, 200)}`);
@@ -761,9 +741,7 @@ async function tgSendDocument(chatId, buffer, filename) {
     form.append("chat_id", String(chatId));
     form.append("document", new Blob([buffer]), filename);
     const url = `https://api.telegram.org/bot${TOKEN}/sendDocument`;
-    const resp = PROXY
-      ? await fetch(url, { method: "POST", body: form, agent: new HttpsProxyAgent(PROXY) })
-      : await fetch(url, { method: "POST", body: form });
+    const resp = await fetch(url, { method: "POST", body: form, ...fetchOptions });
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
       const err = new Error(`sendDocument ${resp.status}: ${body.slice(0, 200)}`);
@@ -998,9 +976,7 @@ async function downloadFile(ctx, fileId, filename) {
   const file = await ctx.api.getFile(fileId);
   const url = `https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`;
 
-  const resp = PROXY
-    ? await fetch(url, { agent: new HttpsProxyAgent(PROXY) })
-    : await fetch(url);
+  const resp = await fetch(url, fetchOptions);
 
   if (!resp.ok) {
     throw new Error(`Download failed: ${resp.status} ${resp.statusText}`);
@@ -1524,11 +1500,15 @@ async function processPrompt(ctx, prompt) {
       }
     }
 
-    // 新会话首条：显示 session ID（只在新建时发一次）
+    // 新会话首条：显示 session ID（只在「真新会话」或 unsafe 跳转注入时发一次）
     // 所有 bot 都显示——owner 跑的 entrypoint-patch 覆盖整个 cwd 桶，non-owner 写的
     // jsonl 也会被 patch 成 cli，用户能在终端 `claude --resume <id>` 拉起 non-owner
     // 的会话。session ID 必须显示给用户，否则无法定位
-    if (sessionSaved && capturedSessionId && capturedSessionId !== sessionId) {
+    // 注意不能用 capturedSessionId !== sessionId 判断：pool 引擎 fork 模式每 turn 都换新
+    // sessionId（--resume fork 语义），那样私聊每条消息都会刷一条通知（2026-06-11 临床审计）。
+    // fork 续命静默更新 DB；最新 sessionId + 终端接续命令用 /status 按需查。
+    const isFreshSession = !sessionId;
+    if (sessionSaved && capturedSessionId && (isFreshSession || inheritedNotice)) {
       const sid = capturedSessionId;
       const sessionMeta = adapter.resolveSession ? await adapter.resolveSession(sid) : null;
       const effectiveCwd = sessionMeta?.cwd || CC_CWD;
@@ -1938,6 +1918,12 @@ async function shutdown(signal) {
     }
   }
 
+  // 2.5 排队中的消息不跨重启保留——这些 chat 收到过"已收到，会一起处理"的承诺，
+  // 静默吞掉等于失信，明确告知重发
+  for (const { chatId: cid, count } of flushGate.listBufferedChats()) {
+    await bot.api.sendMessage(cid, `♻️ Bridge 正在重启，排队中的 ${count} 条消息不会自动处理，请稍后重发。`).catch(() => {});
+  }
+
   // 3. 清理所有活跃的进度消息（避免孤儿进度卡在聊天里）
   const cleanups = [];
   for (const [cid, tracker] of activeProgressTrackers) {
@@ -1987,4 +1973,36 @@ console.log(`  进度详细度: ${DEFAULT_VERBOSE}`);
 console.log(`  限流: ${RATE_LIMIT_MAX_REQUESTS}/${Math.round(RATE_LIMIT_WINDOW_MS / 1000)}s`);
 console.log(`  Idle: timeout=${IDLE_TIMEOUT_MS > 0 ? Math.round(IDLE_TIMEOUT_MS / 60000) + "min" : "off"}, reset=${RESET_ON_IDLE_MS > 0 ? Math.round(RESET_ON_IDLE_MS / 60000) + "min" : "off"}`);
 console.log(`  Cron: ${CRON_ENABLED ? "enabled" : "disabled"}`);
+
+// ── 启动自检（pool 引擎）：验证 --bg 整条链 spawn→roster→jsonl echo→turn_end→stop ──
+// CC 升级是这套引擎的头号病史（v2.1.153 allowlist、v2.1.168 control key 两次发作），
+// 链路依赖全是非公开契约。自检把"升级后静默哑掉"变成"开机报警"。
+// 失败不阻塞启动（自检可能误报，bot 保持可用），但给 OWNER 发 TG 警告。
+// 自检 turn 用 haiku + low effort 省 quota；POOL_SELF_CHECK=0 可关闭。
+if (DEFAULT_BACKEND === "claude" && process.env.CLAUDE_POOL_ENGINE === "1" && process.env.POOL_SELF_CHECK !== "0") {
+  setTimeout(async () => {
+    const t0 = Date.now();
+    try {
+      const adapter = adapters.claude;
+      let ok = false;
+      let text = "";
+      for await (const ev of adapter.streamQuery("自检 ping：只回复 pong 一个词", null, undefined, {
+        model: "haiku",
+        effort: "low",
+        timeoutMs: 120000,
+      })) {
+        if (ev.type === "result") { ok = ev.success; text = ev.text || ""; }
+      }
+      if (!ok) throw new Error(text.slice(0, 200) || "result success=false");
+      console.log(`[self-check] pool 链路 OK（${Math.round((Date.now() - t0) / 1000)}s）: ${text.replace(/\s+/g, " ").slice(0, 40)}`);
+    } catch (e) {
+      console.error(`[self-check] pool 链路 FAILED: ${e.message}`);
+      await bot.api.sendMessage(
+        OWNER_ID,
+        `🚨 启动自检失败：--bg 引擎链路不通（${e.message.slice(0, 150)}）。\n多半是 Claude Code 升级改了行为，bot 可能无法正常回复，需要人工排查（/doctor 看版本信息）。`
+      ).catch(() => {});
+    }
+  }, 15000);
+}
+
 await startBotPolling();
