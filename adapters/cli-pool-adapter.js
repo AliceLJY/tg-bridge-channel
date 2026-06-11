@@ -30,6 +30,17 @@ function ensurePool(initConfig) {
 function* mapEvents(poolEvent, state) {
   if (poolEvent.type === "session_init") { yield poolEvent; return; }
   if (poolEvent.type === "user_echo") return;
+  if (poolEvent.type === "busy") {
+    // fork 前置检查拒绝(上一长任务仍在后台写产出):不 fork、session 不变,
+    // 用户稍后重发即可在产出完整落盘后续上。/new 是确认卡死时的逃生口。
+    const idleMin = Math.max(1, Math.round((poolEvent.idleMs || 0) / 60000));
+    yield {
+      type: "result",
+      success: false,
+      text: `⏳ 上一条长任务仍在后台执行中(约 ${idleMin} 分钟前还有产出落盘)。请稍等片刻再发消息,它跑完后下一条消息会自动接上全部进展;如果确认卡死,发 /new 重开会话。`,
+    };
+    return;
+  }
   if (poolEvent.type === "text") {
     state.accumulatedText += poolEvent.text;
     yield { type: "text", text: poolEvent.text };
@@ -120,7 +131,7 @@ export function createAdapter(config = {}) {
         const isTimeout = /tail timeout/.test(e.message || "");
         const mins = Math.round(Number(process.env.CLI_POOL_TURN_TIMEOUT_MS || 600000) / 60000);
         const text = isTimeout
-          ? `⏱️ 等待输出超过 ${mins} 分钟。CC 后台会话可能仍在处理这条长任务(并未中断),稍等片刻再发一条消息即可查看进展或继续。`
+          ? `⏱️ 等待输出超过 ${mins} 分钟。CC 后台会话可能仍在处理这条长任务(并未中断),稍等片刻再发一条消息即可查看进展或继续;若连续多次超时,发 /new 重开会话。`
           : `CC(pool) 出错:${e.message}`;
         yield { type: "result", success: false, text };
       }

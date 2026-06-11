@@ -8,7 +8,7 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { writeFileSync, appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { JsonlTailReader, buildTurnArgs, CliPool } from "./cli-pool.js";
+import { JsonlTailReader, buildTurnArgs, CliPool, readLastTurnState, INTERRUPTED_TURN_NOTE } from "./cli-pool.js";
 
 const J = (o) => JSON.stringify(o);
 
@@ -173,5 +173,100 @@ describe("CliPool.sendAndStream 超时语义(2026-06-11 临床修正:超时不�
     }
     expect(err?.message).toMatch(/tail timeout/);
     expect(stops).toEqual([]);
+  });
+});
+
+describe("readLastTurnState(fork 前置检查的 jsonl 尾部扫描)", () => {
+  const J3 = (o) => JSON.stringify(o);
+  let dir, path;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "lts-")); path = join(dir, "s.jsonl"); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  test("尾部是 turn_duration → complete", () => {
+    writeFileSync(path, [
+      J3({ type: "user", message: { content: "hi" } }),
+      J3({ type: "assistant", message: { content: [{ type: "text", text: "ok" }] } }),
+      J3({ type: "system", subtype: "turn_duration", durationMs: 1 }),
+    ].join("\n") + "\n");
+    expect(readLastTurnState(path)).toMatchObject({ exists: true, complete: true });
+  });
+
+  test("最后一个 user 之后无 turn_end → incomplete(半截快照)", () => {
+    writeFileSync(path, [
+      J3({ type: "system", subtype: "turn_duration", durationMs: 1 }),
+      J3({ type: "user", message: { content: "next msg" } }),
+      J3({ type: "assistant", message: { content: [{ type: "text", text: "partial" }] } }),
+    ].join("\n") + "\n");
+    expect(readLastTurnState(path)).toMatchObject({ exists: true, complete: false });
+  });
+
+  test("turn_end 后跟 summary 等杂行仍 complete(杂行被跳过)", () => {
+    writeFileSync(path, [
+      J3({ type: "user", message: { content: "hi" } }),
+      J3({ type: "system", subtype: "turn_duration", durationMs: 1 }),
+      J3({ type: "summary", summary: "t" }),
+      "not-json-line",
+    ].join("\n") + "\n");
+    expect(readLastTurnState(path)).toMatchObject({ exists: true, complete: true });
+  });
+
+  test("文件不存在 → exists:false + complete:true(放行新建)", () => {
+    expect(readLastTurnState(join(dir, "nope.jsonl"))).toMatchObject({ exists: false, complete: true });
+  });
+});
+
+describe("CliPool.sendAndStream fork 前置检查(2026-06-11 半截快照错乱修复)", () => {
+  const J4 = (o) => JSON.stringify(o);
+
+  function makeResumePool(prevState) {
+    const dir = mkdtempSync(join(tmpdir(), "fork-"));
+    const path = join(dir, "s.jsonl");
+    writeFileSync(path, [
+      J4({ type: "user", message: { content: "hi" } }),
+      J4({ type: "assistant", message: { content: [{ type: "text", text: "ok" }] } }),
+      J4({ type: "system", subtype: "turn_duration", durationMs: 1 }),
+    ].join("\n") + "\n");
+    const pool = new CliPool({ cwd: dir });
+    const spawnedOpts = [];
+    pool._readPrevTurnState = () => prevState;
+    pool._spawnTurn = async (text, opts) => { spawnedOpts.push(opts); return { short: "fake0001", sessionId: "sess-2", cwd: dir, jsonlPath: path }; };
+    pool.stopWorker = () => Promise.resolve();
+    return { pool, spawnedOpts, dir };
+  }
+
+  test("上一 turn 未完成 + jsonl 仍在写 → yield busy、不 spawn", async () => {
+    const { pool, spawnedOpts, dir } = makeResumePool({ exists: true, complete: false, mtimeMs: Date.now() - 10_000 });
+    const events = [];
+    try {
+      for await (const ev of pool.sendAndStream("prev-sess", "hi", { timeoutMs: 2000 })) events.push(ev);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe("busy");
+    expect(spawnedOpts).toHaveLength(0);
+  });
+
+  test("上一 turn 未完成 + jsonl 已停滞 → 放行 fork 且 systemAppend 注入切断警示", async () => {
+    const { pool, spawnedOpts, dir } = makeResumePool({ exists: true, complete: false, mtimeMs: Date.now() - 600_000 });
+    try {
+      for await (const _ of pool.sendAndStream("prev-sess", "hi", { timeoutMs: 2000, systemAppend: "群聊框架" })) { /* drain */ }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    expect(spawnedOpts).toHaveLength(1);
+    expect(spawnedOpts[0].systemAppend).toContain(INTERRUPTED_TURN_NOTE);
+    expect(spawnedOpts[0].systemAppend).toContain("群聊框架");
+  });
+
+  test("上一 turn 完整 → 正常放行、无警示注入", async () => {
+    const { pool, spawnedOpts, dir } = makeResumePool({ exists: true, complete: true, mtimeMs: Date.now() });
+    try {
+      for await (const _ of pool.sendAndStream("prev-sess", "hi", { timeoutMs: 2000 })) { /* drain */ }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    expect(spawnedOpts).toHaveLength(1);
+    expect(spawnedOpts[0].systemAppend).toBeUndefined();
   });
 });
