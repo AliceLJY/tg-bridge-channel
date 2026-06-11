@@ -26,6 +26,7 @@ import { createInterface } from "node:readline";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { findSessionFile } from "./claude-sessions.js";
 
 // ============ 常量 ============
 const ROSTER_PATH = join(homedir(), ".claude/daemon/roster.json");
@@ -243,6 +244,24 @@ export class CliPool {
   // fork 前置检查的状态读取,实例方法便于测试注入(默认走真实 jsonl 尾部扫描)。
   _readPrevTurnState(jsonlPath) { return readLastTurnState(jsonlPath); }
 
+  // 按 sessionId 全局定位 jsonl(不依赖当前 cwd),实例方法便于测试注入。
+  _findSessionPath(sessionId) {
+    try { return findSessionFile(sessionId)?.path || null; } catch { return null; }
+  }
+
+  // 该 sessionId 是否还有活 worker 在 daemon roster 里(busy 判定的必要条件,codex review P2):
+  // 用户 Stop / bridge abort 会 claude stop 移除 worker——此时即使 jsonl mtime 还新鲜,也没有
+  // 任何进程会补写 turn_end,不该 busy 误堵,应走"fork + 切断警示"路径。
+  _hasLiveWorker(sessionId) {
+    try {
+      const workers = readRoster()?.workers || {};
+      for (const w of Object.values(workers)) {
+        if (w?.sessionId === sessionId) return true;
+      }
+    } catch { /* roster 读不到按无活 worker 处理 */ }
+    return false;
+  }
+
   // 起一个带 prompt 的 --bg worker;有 resumeSessionId 则 fork 续上下文。
   // per-turn 覆盖(model/effort/cwd/systemAppend)来自 bridge streamOverrides:/model /effort /dir
   // 的 chat 级偏好 + 群聊上下文 scaffold + bridgeHint,优先于 pool 级 config 默认。
@@ -329,19 +348,21 @@ export class CliPool {
     let interruptedNote = null;
     if (sessionId) {
       // fork 前置检查(2026-06-11):上一 turn 未收尾时,fork 出的是半截快照,CC 会脑补衔接。
-      const prevPath = sessionJsonlPath(sessionId, opts.cwd || this.config.cwd);
+      // 先按 sessionId 全局定位 jsonl(codex review P2:per-chat /dir 切 cwd 后按当前 cwd 拼
+      // 路径会找不到旧 session 的 jsonl、保护被静默跳过),找不到再退回按 cwd 拼。
+      const prevPath = this._findSessionPath(sessionId) || sessionJsonlPath(sessionId, opts.cwd || this.config.cwd);
       const prev = this._readPrevTurnState(prevPath);
       if (prev.exists && !prev.complete) {
         const stallMs = this.config.workerStallMs;
         const idleMs = Date.now() - prev.mtimeMs;
-        if (idleMs < stallMs) {
-          // worker 大概率仍在跑(jsonl 近期有写入):拒绝 fork,让产出完整落盘后再续。
-          console.warn(`[cli-pool] resume ${String(sessionId).slice(0,8)} blocked: previous turn still writing (idle ${Math.round(idleMs/1000)}s < ${Math.round(stallMs/1000)}s)`);
+        if (idleMs < stallMs && this._hasLiveWorker(sessionId)) {
+          // 有活 worker 且 jsonl 近期有写入:真在跑,拒绝 fork,让产出完整落盘后再续。
+          console.warn(`[cli-pool] resume ${String(sessionId).slice(0,8)} blocked: previous turn still writing (idle ${Math.round(idleMs/1000)}s < ${Math.round(stallMs/1000)}s, live worker)`);
           yield { type: "busy", idleMs };
           return;
         }
-        // jsonl 已停滞:worker 僵死或长命令静默,放行 fork 但注入警示让模型核验状态、不脑补。
-        console.warn(`[cli-pool] resume ${String(sessionId).slice(0,8)}: previous turn incomplete (jsonl stalled ${Math.round(idleMs/1000)}s), injecting interrupted-turn note`);
+        // worker 已死(Stop/abort/僵死)或 jsonl 停滞:放行 fork,注入警示让模型核验状态、不脑补。
+        console.warn(`[cli-pool] resume ${String(sessionId).slice(0,8)}: previous turn incomplete (jsonl idle ${Math.round(idleMs/1000)}s, live=${this._hasLiveWorker(sessionId)}), injecting interrupted-turn note`);
         interruptedNote = INTERRUPTED_TURN_NOTE;
       }
     }
