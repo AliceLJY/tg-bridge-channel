@@ -21,7 +21,7 @@
 //   _waitForReady(spawn 带 prompt 不需要等 ready)、findControlSockPath、persistence。
 
 import { spawn } from "node:child_process";
-import { readFileSync, statSync, existsSync, createReadStream } from "node:fs";
+import { readFileSync, statSync, existsSync, createReadStream, openSync, readSync, closeSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
@@ -92,6 +92,54 @@ export function readRoster() {
   try { return JSON.parse(readFileSync(ROSTER_PATH, "utf8")); }
   catch { return null; }
 }
+
+// ============ fork 前置检查(2026-06-11 错乱修复)============
+// 背景:turn 超时留活 worker 后,用户下条消息会 --resume fork 出"半截快照"——CC 在新 fork 里
+// 看到突然中断的上下文,会脑补衔接(实测产出"命令被你打断了"/凭空报错/虚构已完成,见
+// RecallNest case bridge-跑-content-publisher-长任务被超时体系误杀)。
+// 对策:fork 前读上一 session jsonl 尾部,判断最后一个 turn 是否完整。
+//   - 未完成 + jsonl 近期仍在写(< stallMs) → worker 真在跑,拒绝 fork(yield busy)
+//   - 未完成 + jsonl 已停滞 → fork 放行,但注入系统警示让模型先验证状态、不脑补
+// 从尾部往前扫:先遇到 turn_duration → 完整;先遇到 user → 未完成。其他行(summary/
+// bridge 注入的元数据行等)跳过。读尾部 64KB 足够覆盖最后一个 turn 的边界。
+const TAIL_SCAN_BYTES = 65536;
+export function readLastTurnState(jsonlPath) {
+  if (!existsSync(jsonlPath)) return { exists: false, complete: true, mtimeMs: 0 };
+  let mtimeMs = 0;
+  try {
+    const st = statSync(jsonlPath);
+    mtimeMs = st.mtimeMs;
+    const start = Math.max(0, st.size - TAIL_SCAN_BYTES);
+    const buf = Buffer.alloc(st.size - start);
+    const fd = openSync(jsonlPath, "r");
+    try { readSync(fd, buf, 0, buf.length, start); } finally { closeSync(fd); }
+    const lines = buf.toString("utf8").split("\n");
+    // start>0 时第一行可能是被截断的半行,丢弃
+    if (start > 0) lines.shift();
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      let d;
+      try { d = JSON.parse(line); } catch { continue; }
+      if (d.type === "system" && d.subtype === TURN_END_SUBTYPE) {
+        return { exists: true, complete: true, mtimeMs };
+      }
+      if (d.type === "user") {
+        // tool_result 行也是 type=user,但属于 turn 进行中的产物,同样意味着 turn 未收尾;
+        // 无需区分,先遇到 user 即未完成。
+        return { exists: true, complete: false, mtimeMs };
+      }
+    }
+    // 窗口内没扫到决定性事件(超长 assistant 输出占满窗口):保守视为未完成,
+    // 走"停滞 → 注入警示"路径不丢消息,且警示是诚实的(让模型验证状态)。
+    return { exists: true, complete: false, mtimeMs };
+  } catch {
+    return { exists: true, complete: true, mtimeMs };
+  }
+}
+
+// 上一轮被切断时注入的系统警示:不阻止继续,但让模型先验证、不脑补。
+export const INTERRUPTED_TURN_NOTE = "注意:本会话上一轮处理因等待超时被切断,切断点之后的工具调用结果可能缺失或不完整。不要假设上一轮中未明确确认完成的操作(如发布、生图、文件写入)已经成功——先用命令实际核验相关状态(文件是否存在、记录是否写入),再决定下一步。如果发现状态与上下文记忆不一致,以实际核验结果为准,并向用户如实说明。";
 
 // ============ jsonl tail reader(原样保留)============
 // 用 byte offset 增量读 jsonl,yield 结构化事件。
@@ -181,12 +229,19 @@ export class CliPool {
       // 危险命令护栏:默认开,设 config.destructiveGuard=false 或 env CLI_POOL_DESTRUCTIVE_GUARD=0 关闭。
       destructiveGuard: config.destructiveGuard !== false && process.env.CLI_POOL_DESTRUCTIVE_GUARD !== "0",
       spawnTimeoutMs: config.spawnTimeoutMs || 30000,
+      // fork 前置检查的"仍在写"判定窗口:上一 session jsonl 的 mtime 距今小于该值视为 worker
+      // 仍在跑、拒绝 fork(见 sendAndStream)。默认 3 分钟——CC 干活时 jsonl 写入间隔通常远小于
+      // 此值;超过它的静默多半是僵死或单条超长命令,放行 fork + 注入警示。
+      workerStallMs: config.workerStallMs || Number(process.env.CLI_POOL_WORKER_STALL_MS || 180000),
     };
   }
 
   // 无常驻 daemon 连接,start/stop 都是空操作(每 turn 自带 spawn)。
   async start() { /* no-op */ }
   async stop() { /* no-op:无常驻 worker,daemon 自己回收 idle */ }
+
+  // fork 前置检查的状态读取,实例方法便于测试注入(默认走真实 jsonl 尾部扫描)。
+  _readPrevTurnState(jsonlPath) { return readLastTurnState(jsonlPath); }
 
   // 起一个带 prompt 的 --bg worker;有 resumeSessionId 则 fork 续上下文。
   // per-turn 覆盖(model/effort/cwd/systemAppend)来自 bridge streamOverrides:/model /effort /dir
@@ -271,12 +326,33 @@ export class CliPool {
   // 每 turn yield 最新 sessionId(fork 后会变),bridge 持久化它,下次传回。
   // opts 透传 per-turn 覆盖:model/effort/cwd/systemAppend(见 _spawnTurn)。
   async* sendAndStream(sessionId, text, opts = {}) {
+    let interruptedNote = null;
+    if (sessionId) {
+      // fork 前置检查(2026-06-11):上一 turn 未收尾时,fork 出的是半截快照,CC 会脑补衔接。
+      const prevPath = sessionJsonlPath(sessionId, opts.cwd || this.config.cwd);
+      const prev = this._readPrevTurnState(prevPath);
+      if (prev.exists && !prev.complete) {
+        const stallMs = this.config.workerStallMs;
+        const idleMs = Date.now() - prev.mtimeMs;
+        if (idleMs < stallMs) {
+          // worker 大概率仍在跑(jsonl 近期有写入):拒绝 fork,让产出完整落盘后再续。
+          console.warn(`[cli-pool] resume ${String(sessionId).slice(0,8)} blocked: previous turn still writing (idle ${Math.round(idleMs/1000)}s < ${Math.round(stallMs/1000)}s)`);
+          yield { type: "busy", idleMs };
+          return;
+        }
+        // jsonl 已停滞:worker 僵死或长命令静默,放行 fork 但注入警示让模型核验状态、不脑补。
+        console.warn(`[cli-pool] resume ${String(sessionId).slice(0,8)}: previous turn incomplete (jsonl stalled ${Math.round(idleMs/1000)}s), injecting interrupted-turn note`);
+        interruptedNote = INTERRUPTED_TURN_NOTE;
+      }
+    }
     const turnOpts = {
       resumeSessionId: sessionId || null,
       model: opts.model,
       effort: opts.effort,
       cwd: opts.cwd,
-      systemAppend: opts.systemAppend,
+      systemAppend: interruptedNote
+        ? (opts.systemAppend ? `${interruptedNote}\n\n${opts.systemAppend}` : interruptedNote)
+        : opts.systemAppend,
     };
     let turn;
     try {
