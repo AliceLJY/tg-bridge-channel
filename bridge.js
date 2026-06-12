@@ -8,6 +8,8 @@ import { basename, join } from "path";
 import { homedir } from "os";
 import {
   getSession,
+  peekSession,
+  getSessionResetAt,
   getSessionTypeState,
   setSession,
   setSessionType,
@@ -1408,6 +1410,9 @@ async function processPrompt(ctx, prompt) {
         backendName,
         sessionType: activeDiscussMode ? "discuss" : effectiveSession.session_type || "normal",
         setSession,
+        peekSession,
+        getResetAt: getSessionResetAt,
+        turnStartedAt: startTime,
         patchCodexStateDb,
       })
       : false;
