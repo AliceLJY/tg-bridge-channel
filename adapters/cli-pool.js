@@ -142,6 +142,21 @@ export function readLastTurnState(jsonlPath) {
 // 上一轮被切断时注入的系统警示:不阻止继续,但让模型先验证、不脑补。
 export const INTERRUPTED_TURN_NOTE = "注意:本会话上一轮处理因等待超时被切断,切断点之后的工具调用结果可能缺失或不完整。不要假设上一轮中未明确确认完成的操作(如发布、生图、文件写入)已经成功——先用命令实际核验相关状态(文件是否存在、记录是否写入),再决定下一步。如果发现状态与上下文记忆不一致,以实际核验结果为准,并向用户如实说明。";
 
+// 从 user 行的 message.content 提取"可作 echo 的文本":
+//   - string → 原样(终端直发的 prompt)
+//   - array → 取第一个 text block 的 text(2026-06-13 codex 复核实据:fork --resume 续接时,
+//     post-spawn 的 user echo 常是数组形态,如 [{type:"text",text:"Continue from where you left off."}];
+//     旧逻辑只认 string → text=null → userEchoSeen 永不置位 → 后续 assistant/turn_duration 全被吞 = 卡死不回传)
+//   - tool_result 数组 / 无 text block → null(绝不把工具结果当 echo,保持归属语义)
+function extractUserEchoText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    const tb = content.find(b => b?.type === "text" && typeof b.text === "string");
+    return tb ? tb.text : null;
+  }
+  return null;
+}
+
 // ============ jsonl tail reader(原样保留)============
 // 用 byte offset 增量读 jsonl,yield 结构化事件。
 //   - expectUserText 过滤掉 fork 继承的历史 user/assistant(只认本 turn 的 user echo 之后)
@@ -172,33 +187,55 @@ export class JsonlTailReader {
     });
   }
 
-  async* readUntilTurnEnd({ expectUserText, timeoutMs = 120000, pollMs = 200, abortSignal } = {}) {
-    // 心跳重置语义:timeoutMs 是"jsonl 静默"上限,每收到新行就把 deadline 推后。
-    let deadline = Date.now() + timeoutMs;
-    let userEchoSeen = !expectUserText;  // 没提供 expectUserText 时跳过归属检查
-    while (Date.now() < deadline) {
+  async* readUntilTurnEnd({ expectUserText, spawnStartedAt = 0, heartbeatMs = 180000, hardLimitMs = 3600000, pollMs = 200, abortSignal } = {}) {
+    // 持续盯梢 + 归属/软结束(2026-06-13 codex 复核根治"CC 有输出但 TG 不返回"):
+    //  ① 归属:本轮 spawn(spawnStartedAt) 之前的历史行全跳过(fork --resume 会把旧上下文写进新 jsonl);
+    //     本轮第一个 user 行即认作 echo,不再死磕 user 内容与 prompt 一字不差——fork/包装后常对不上,
+    //     一旦 userEchoSeen 永 false,后续 assistant 全被忽略、CC 写好的话被压住不发(这就是"无输出")。
+    //  ② 软结束:assistant stop_reason=end_turn 即视为本轮说完、立即回传,不必傻等 system/turn_duration
+    //     (CC 说完/停下问你时 --bg 下往往不再出 turn_duration → bridge 一直等、显示"处理中"不返回)。
+    //  ③ 静默 heartbeatMs 报进度、hardLimitMs 真卡死才 throw(原持续盯梢逻辑保留)。
+    const turnStart = Date.now();
+    let lastActivity = turnStart;     // 最近一次 jsonl 有新行的时刻(静默判定基准)
+    let lastHeartbeat = turnStart;    // 最近一次 yield idle_heartbeat 的时刻
+    // 有归属依据(spawnStartedAt 或 expectUserText)时等本轮 echo;两者都无才从头放行(测试/兜底)
+    let userEchoSeen = !expectUserText && !spawnStartedAt;
+    while (true) {
       if (abortSignal?.aborted) throw new Error("aborted");
+      if (Date.now() - turnStart > hardLimitMs) {
+        throw new Error(`turn hard limit (${Math.round(hardLimitMs / 60000)}min)`);
+      }
       const lines = await this._readNewLines();
-      if (lines.length > 0) deadline = Date.now() + timeoutMs;  // 心跳:有新行就续命
+      if (lines.length > 0) lastActivity = Date.now();  // 有新行 → 刷新活动时刻
       for (const line of lines) {
         let d;
         try { d = JSON.parse(line); } catch { continue; }
+        // 归属①:本轮 spawn 之前的历史行(fork --resume 把旧上下文写进新 jsonl)一律跳过,只认本轮内容
+        const lineMs = d.timestamp ? Date.parse(d.timestamp) : 0;
+        if (spawnStartedAt && lineMs && lineMs < spawnStartedAt) continue;
         const t = d.type;
         if (t === "user") {
-          const c = d.message?.content;
-          const text = typeof c === "string" ? c : null;
-          if (expectUserText && text === expectUserText) {
+          // echo 文本兼容 string 与 array(取 text block);tool_result 数组 → null,不作 echo(见 extractUserEchoText)
+          const text = extractUserEchoText(d.message?.content);
+          // 归属②:有 spawnStartedAt 时,本轮第一个【含文本的】user 即认作 echo(不强求 === prompt;fork/包装后
+          // 常对不上,且 post-spawn echo 可能是数组 "Continue from where you left off." —— 一旦 userEchoSeen
+          // 永 false,后面 assistant/turn_duration 全被忽略 → CC 的话压住不发,就是"无输出/卡死不回传")
+          if (!userEchoSeen && spawnStartedAt && text !== null) {
             userEchoSeen = true;
             yield { type: "user_echo", text };
-          } else if (!expectUserText) {
+          } else if (expectUserText && text === expectUserText) {
+            userEchoSeen = true;
+            yield { type: "user_echo", text };
+          } else if (!expectUserText && !spawnStartedAt) {
             yield { type: "user_echo", text };
           }
-          // 不匹配的 user(fork 继承的历史 / 别人 peek 注入)忽略,不影响归属
+          // 其余 user(tool_result 列表 / 别人 peek 注入)忽略,不影响归属
         } else if (t === "assistant" && userEchoSeen) {
           const c = d.message?.content;
+          let sawText = false;
           if (Array.isArray(c)) {
             for (const block of c) {
-              if (block.type === "text")     yield { type: "text", text: block.text || "" };
+              if (block.type === "text")     { sawText = true; yield { type: "text", text: block.text || "" }; }
               else if (block.type === "thinking") yield { type: "thinking", text: block.thinking || "" };
               else if (block.type === "tool_use") {
                 // AskUserQuestion 已被 PreToolUse hook 在执行前 block(见 buildSettings + block-interactive-ask.sh),
@@ -208,14 +245,36 @@ export class JsonlTailReader {
               }
             }
           }
+          // 软结束:仅当本条 assistant【含可见 text】且 stop_reason=end_turn 才收尾,立即回传、不必等
+          // system/turn_duration(CC 说完"发布失败:40164"这类正文就是 text+end_turn,但 --bg 下未必再出
+          // turn_duration → 不软结束就会一直等、TG 不返回)。
+          // 关键 gate 在 sawText(2026-06-13 codex 复核实据,勿删):--effort max 开 thinking 时,jsonl 会把
+          // thinking 单独写成一条 stop_reason=end_turn 的 assistant 行,正文 text 在【下一条】assistant 行
+          // (也 end_turn)。本会话实测 19/19 thinking-only end_turn 后面都紧跟 text 行——若对 thinking-only
+          // 也 return,会在正文【之前】截断 = 重新制造"无输出"。故 thinking-only end_turn 不收尾、继续 tail;
+          // turn_duration 仍是另一条收尾路径(见下),两者先到先得。
+          if (sawText && d.message?.stop_reason === "end_turn") {
+            yield { type: "turn_end", durationMs: Date.now() - turnStart, soft: true };
+            return;
+          }
         } else if (t === "system" && d.subtype === TURN_END_SUBTYPE && userEchoSeen) {
           yield { type: "turn_end", durationMs: d.durationMs };
           return;
+        } else if (t === "system" && d.subtype === TURN_END_SUBTYPE && spawnStartedAt && !userEchoSeen) {
+          // canary(2026-06-13,勿删):本轮(post-spawn)收尾信号已到,但归属从未开闸(echo 没被识别)——
+          // 这正是"卡死不回传"的指纹。echo 提取已兼容 string/array(见 extractUserEchoText),正常不该到这;
+          // 若日后又冒出新的 echo 形态,这条 warn 会在卡死前把现场打到日志,便于一眼定位、对症扩 extractUserEchoText。
+          console.warn(`[cli-pool] turn_duration 已到但 userEchoSeen=false —— 本轮 echo 未被识别,即将卡到 hardLimit。expectUserText=${JSON.stringify((expectUserText || "").slice(0, 40))}`);
         }
+      }
+      // 静默心跳:距上次 jsonl 活动 ≥ heartbeatMs 且距上次心跳 ≥ heartbeatMs → 报"还在跑",不退出
+      const now = Date.now();
+      if (now - lastActivity >= heartbeatMs && now - lastHeartbeat >= heartbeatMs) {
+        lastHeartbeat = now;
+        yield { type: "idle_heartbeat", idleSec: Math.round((now - lastActivity) / 1000), elapsedSec: Math.round((now - turnStart) / 1000) };
       }
       await new Promise(r => setTimeout(r, pollMs));
     }
-    throw new Error(`jsonl tail timeout (${timeoutMs}ms)`);
   }
 }
 
@@ -270,6 +329,8 @@ export class CliPool {
     const { name, args } = buildTurnArgs(this.config, opts);
     args.push(text);  // 关键:带 prompt spawn,worker 起来即跑首 turn,无需 op:reply
     const spawnCwd = opts.cwd || this.config.cwd;
+    // 记本轮 spawn 时刻:reader 用它把 fork 继承的历史行(timestamp 更早)与本轮内容区分开(归属过滤)
+    const spawnStartedAt = Date.now();
 
     return new Promise((resolve, reject) => {
       const child = spawn(CLAUDE_CLI_PATH, args, { cwd: spawnCwd, stdio: ["ignore", "pipe", "pipe"] });
@@ -298,7 +359,7 @@ export class CliPool {
           const w = readRoster()?.workers?.[short];
           if (w?.sessionId) {
             const cwd = w.cwd || spawnCwd;
-            resolve({ short, sessionId: w.sessionId, cwd, jsonlPath: sessionJsonlPath(w.sessionId, cwd) });
+            resolve({ short, sessionId: w.sessionId, cwd, jsonlPath: sessionJsonlPath(w.sessionId, cwd), spawnStartedAt });
             return;
           }
         }
@@ -399,11 +460,14 @@ export class CliPool {
       const reader = new JsonlTailReader(turn.jsonlPath);
       yield* reader.readUntilTurnEnd({
         expectUserText: text,
+        spawnStartedAt: turn.spawnStartedAt || 0,
         abortSignal: opts.abortSignal,
-        timeoutMs: opts.timeoutMs || 600000,
+        heartbeatMs: opts.heartbeatMs || 180000,
+        hardLimitMs: opts.hardLimitMs || 3600000,
       });
     } catch (e) {
-      if (/tail timeout/.test(e.message || "")) sawTimeout = true;
+      // 超时类(turn 硬上限)不杀 worker——留活由 daemon 回收,产出由下次 fork 继承(Codex 复核坑6)
+      if (/tail timeout|hard limit/.test(e.message || "")) sawTimeout = true;
       throw e;
     } finally {
       if (sawTimeout) {

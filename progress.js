@@ -107,6 +107,8 @@ export function createProgressTracker(ctx, chatId, verboseLevel = 1, backendLabe
     // Typing 心跳（每 4 秒发一次，Telegram typing 持续 5 秒）
     typingInterval = setInterval(() => {
       ctx.api.sendChatAction(chatId, "typing").catch(() => {});
+      // 长任务静默时(无新事件)也刷新 header 运行时长,让用户看到"在动"、不被"一动不动"骗着取消(2026-06-13)
+      if (progressMsgId && !finished) doEdit();
     }, 4000);
     // 立刻发一次
     ctx.api.sendChatAction(chatId, "typing").catch(() => {});
@@ -163,6 +165,9 @@ export function createProgressTracker(ctx, chatId, verboseLevel = 1, backendLabe
       if (snippet.trim()) {
         entries.push(`💭 ${snippet}${event.text.length > 80 ? "..." : ""}`);
       }
+    } else if (event.type === "heartbeat") {
+      // 长任务静默心跳:不加 entry(不污染进度列表),仅靠末尾 scheduleEdit 刷新 header 运行时长,
+      // 让用户看到"还在跑、已 Xm"。重置 idleMonitor 卡死计时由 bridge 层对每个 event 统一处理。
     }
 
     // 保留最近 MAX_ENTRIES 条

@@ -40,7 +40,7 @@ The pool engine spawns one short-lived `claude --bg` worker **per turn**: each i
 Two practical caveats of the fork-per-turn design:
 
 - **Quota grows with conversation length.** Every turn re-forks the full history, so very long conversations consume subscription usage superlinearly. Start a fresh session (`/new`) when switching topics.
-- **A turn timeout does not kill the task.** If a long-running task produces no transcript output for `CLI_POOL_TURN_TIMEOUT_MS` (default 10 min), the bridge reports a timeout but deliberately leaves the worker running — its output keeps landing in the session transcript, and your next message forks from that same session and inherits everything written in the meantime. Normal completion and the Stop button still stop the worker immediately.
+- **Silence isn't a hang, and a timeout doesn't kill the task.** When a long-running task goes quiet for more than `CLI_POOL_HEARTBEAT_MS` (default 3 min), the bridge keeps emitting a "still running" heartbeat instead of declaring failure; only when the turn's total duration exceeds `CLI_POOL_HARD_LIMIT_MS` (default 60 min) does it report a hard timeout — and even then it deliberately leaves the worker running, so its output keeps landing in the session transcript and your next message forks from that same session and inherits everything written in the meantime. Normal completion and the Stop button still stop the worker immediately.
 
 The backend name stays `claude` in both modes, so all orchestration (`backendName === "claude"` checks for approval / labels / A2A / cron) is unchanged. Switching engines is a per-process environment variable; rolling back is removing it.
 
