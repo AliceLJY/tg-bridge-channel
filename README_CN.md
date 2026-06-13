@@ -40,7 +40,7 @@ pool 引擎为**每条消息**起一个短命的 `claude --bg` worker：入站 T
 fork-per-turn 设计的两个实际代价：
 
 - **配额随对话长度递增。** 每个 turn 都带全部历史重新 fork，很长的对话会超线性消耗订阅用量。切换话题时用 `/new` 开新会话。
-- **turn 超时不等于任务被杀。** 长任务超过 `CLI_POOL_TURN_TIMEOUT_MS`（默认 10 分钟）没有新输出时，bridge 报告超时但**刻意不停掉 worker**——任务继续跑、产出继续写进 session 记录，你下一条消息从同一 session fork 时会继承这期间写入的一切。正常完成和 Stop 按钮仍会立即停掉 worker。
+- **静默不等于卡死，超时也不杀任务。** 长任务静默超过 `CLI_POOL_HEARTBEAT_MS`（默认 3 分钟）时，bridge 持续发"还在跑"的心跳而非判失败；只有这一轮总时长超过 `CLI_POOL_HARD_LIMIT_MS`（默认 60 分钟）才报硬超时，且**刻意不停掉 worker**——任务继续跑、产出继续写进 session 记录，你下一条消息从同一 session fork 时会继承这期间写入的一切。正常完成和 Stop 按钮仍会立即停掉 worker。
 
 两种模式下后端名都保持 `claude`，所以所有编排逻辑（审批 / 标签 / A2A / cron 的 `backendName === "claude"` 判断）不变。切换引擎是进程级环境变量；回滚就是删掉它。
 

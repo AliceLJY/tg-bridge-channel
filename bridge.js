@@ -1994,7 +1994,7 @@ if (DEFAULT_BACKEND === "claude" && process.env.CLAUDE_POOL_ENGINE === "1" && pr
       for await (const ev of adapter.streamQuery("自检 ping：只回复 pong 一个词", null, undefined, {
         model: "haiku",
         effort: "low",
-        timeoutMs: 120000,
+        hardLimitMs: 120000,  // 自检 ping 2min 硬上限:streamQuery 现只认 hardLimitMs,旧 timeoutMs 是死参→会退回 60min 默认(2026-06-13 codex 复核漏改 caller)
       })) {
         if (ev.type === "result") { ok = ev.success; text = ev.text || ""; }
       }
