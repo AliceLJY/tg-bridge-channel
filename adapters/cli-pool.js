@@ -40,13 +40,15 @@ const BLOCK_ASK_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "sc
 // 会自主定默认 + 直接完成任务(测B 写出完整正文);而仅靠 hook deny(测A)模型会 recover 成"换文本
 // 再问一遍"、仍停在原地等答。所以 append 是主防线(模型不调),BLOCK_ASK_SCRIPT 的 hook 是兜底
 // 安全网(万一仍调了也拦下、让它 recover、不挂死)。
-const BRIDGE_SYSTEM_NOTE = "你运行在非交互的 Telegram 自动化环境:没有人能在终端点选,调用 AskUserQuestion 会让会话挂起直到超时。请不要调用 AskUserQuestion;遇到本来需要用户选择的地方,自行按合理默认做出决定并继续完成任务(写作类任务的风格/标题/结构等通常已在 skill 中预设,按既定流程推进即可),必要时用一两句话说明你替用户做了哪些假设。";
+// export:--print 引擎(cli-print-adapter.js)复用同一段系统提示,非交互防护单一真相源。
+export const BRIDGE_SYSTEM_NOTE = "你运行在非交互的 Telegram 自动化环境:没有人能在终端点选,调用 AskUserQuestion 会让会话挂起直到超时。请不要调用 AskUserQuestion;遇到本来需要用户选择的地方,自行按合理默认做出决定并继续完成任务(写作类任务的风格/标题/结构等通常已在 skill 中预设,按既定流程推进即可),必要时用一两句话说明你替用户做了哪些假设。";
 const TURN_END_SUBTYPE = "turn_duration";
 
 // 构造 --settings inline JSON:注入 PreToolUse hook,不落地文件、不碰用户 settings.json。
 //   - AskUserQuestion 拦截:无条件(bridge 永远非交互,见 BLOCK_ASK_SCRIPT)。
 //   - Bash 危险命令护栏:仅 includeDestructive 时(env CLI_POOL_DESTRUCTIVE_GUARD 控制)。
-function buildSettings(includeDestructive) {
+// export:--print 引擎复用同一份 settings 构造(AskUserQuestion 拦截 + 可选 Bash 护栏),单一真相源。
+export function buildSettings(includeDestructive) {
   const preToolUse = [
     { matcher: "AskUserQuestion", hooks: [{ type: "command", command: "bash " + JSON.stringify(BLOCK_ASK_SCRIPT) }] },
   ];
