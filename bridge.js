@@ -57,7 +57,6 @@ import { createStreamingPreview } from "./streaming-preview.js";
 import { markdownToTelegramHTML, hasMarkdownFormatting } from "./markdown-to-tg.js";
 import { extractFilePathsFromText, sanitizeBackendError, sendCapturedOutputs, sendFinalResult } from "./output-relay.js";
 import { createTaskFinalizer, finishTurnProgress, saveCapturedSession } from "./turn-state.js";
-import { pruneForkSessions } from "./scripts/prune-fork-sessions.mjs";
 import { registerCommands } from "./commands/index.js";
 import { startEntrypointPatcher } from "./scripts/patch-entrypoint.js";
 import {
@@ -972,26 +971,6 @@ mkdirSync(FILE_DIR, { recursive: true });
     }
   } catch (e) {
     console.log(`[startup-cleanup] 跳过: ${e.message}`);
-  }
-
-  // 顺带清理 pool 引擎 fork-per-turn 的中间会话副产物(custom-title tg-* 且无 AI 标题、超期),
-  // 防它们堆满 claude app 会话列表(Alice 2026-06-13 反馈;保留 3 天)。12h marker 防多 bot/频繁
-  // 重启重复扫描;current 会话靠"mtime < keepDays"天然排除(活跃 bot 当前会话 mtime 都很新)。
-  try {
-    const markerPath = join(homedir(), ".claude", ".tg-fork-prune-last");
-    const TWELVE_H = 12 * 60 * 60 * 1000;
-    let due = true;
-    try { if (Date.now() - statSync(markerPath).mtimeMs < TWELVE_H) due = false; } catch { /* 无 marker → 该跑 */ }
-    if (due) {
-      pruneForkSessions({
-        cwd: process.env.CC_CWD || homedir(),
-        keepDays: Number(process.env.CLI_POOL_FORK_KEEP_DAYS) || 3,
-        stamp: new Date().toISOString().slice(0, 10).replace(/-/g, ""),
-      });
-      try { writeFileSync(markerPath, String(Date.now())); } catch { /* marker 写失败不致命,下次重扫 */ }
-    }
-  } catch (e) {
-    console.log(`[startup-cleanup] fork prune 跳过: ${e.message}`);
   }
 })();
 
