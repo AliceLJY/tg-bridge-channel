@@ -41,7 +41,7 @@ const BLOCK_ASK_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "sc
 // 再问一遍"、仍停在原地等答。所以 append 是主防线(模型不调),BLOCK_ASK_SCRIPT 的 hook 是兜底
 // 安全网(万一仍调了也拦下、让它 recover、不挂死)。
 // export:--print 引擎(cli-print-adapter.js)复用同一段系统提示,非交互防护单一真相源。
-export const BRIDGE_SYSTEM_NOTE = "你运行在非交互的 Telegram 自动化环境:没有人能在终端点选,调用 AskUserQuestion 会让会话挂起直到超时。请不要调用 AskUserQuestion;遇到本来需要用户选择的地方,自行按合理默认做出决定并继续完成任务(写作类任务的风格/标题/结构等通常已在 skill 中预设,按既定流程推进即可),必要时用一两句话说明你替用户做了哪些假设。";
+export const BRIDGE_SYSTEM_NOTE = "你运行在非交互的 Telegram 自动化环境:没有人能在终端点选,调用 AskUserQuestion 会让会话挂起直到超时。请不要调用 AskUserQuestion;遇到本来需要用户选择的地方,自行按合理默认做出决定并继续完成任务(写作类任务的风格/标题/结构等通常已在 skill 中预设,按既定流程推进即可),必要时用一两句话说明你替用户做了哪些假设。另外:如果你看到一条孤立的「Continue from where you left off.」(或类似空泛的续接提示)、而此刻并没有真正的新用户消息需要处理,那是系统 resume 时自动注入的合成消息、不是用户指令——这种情况不要重新回答或复述上一个问题,简短示意在等待即可(甚至可以不输出);等真正的用户消息到了,再针对那条消息回应,不要把它和这条合成续接提示混在一起。";
 const TURN_END_SUBTYPE = "turn_duration";
 
 // 构造 --settings inline JSON:注入 PreToolUse hook,不落地文件、不碰用户 settings.json。
