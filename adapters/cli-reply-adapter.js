@@ -76,7 +76,7 @@ function* mapEvents(ev, state) {
     if ((ev.name === "Write" || ev.name === "Edit") && input.file_path) yield { type: "file_written", filePath: input.file_path, tool: ev.name };
     return;
   }
-  if (ev.type === "turn_end") { yield { type: "result", success: true, text: state.accumulatedText, duration: ev.durationMs }; return; }
+  if (ev.type === "turn_end") { yield { type: "result", success: true, text: state.accumulatedText, duration: state.turnStartAt ? Date.now() - state.turnStartAt : ev.durationMs }; return; }
 }
 
 export function createAdapter(config = {}) {
@@ -116,7 +116,7 @@ export function createAdapter(config = {}) {
       const turnCwd = cwd || defaultCwd;
       const heartbeatMs = Number(overrides.heartbeatMs) || Number(process.env.CLI_POOL_HEARTBEAT_MS) || 180000;
       const hardLimitMs = Number(overrides.hardLimitMs) || Number(process.env.CLI_POOL_HARD_LIMIT_MS) || 3600000;
-      const state = { accumulatedText: "" };
+      const state = { accumulatedText: "", turnStartAt: 0 };
       let activeShort = null;  // 当前轮投喂到的 worker short:用户 Stop 时杀它,别让它在后台 bypassPermissions 跑工具(codex P1)
       try {
         const live = sessionId ? findLiveWorkerBySession(sessionId) : null;
@@ -135,12 +135,16 @@ export function createAdapter(config = {}) {
           const replyStartedAt = Date.now();  // 归属基准:本轮 reply 之前的行(上一轮收尾的 turn_duration 等)按 ts 滤掉
           const ack = await daemon.reply(worker.short, prompt);
           if (ack.ok) {
+            state.turnStartAt = replyStartedAt;  // 本轮耗时基准:不信任 jsonl turn_duration(常驻 worker 下是累计/残留值 → 假"几十分钟")
             yield { type: "session_init", sessionId: worker.sessionId };  // 不变,幂等(bridge 持久化它)
             const reader = new JsonlTailReader(worker.jsonlPath);
             reader.offset = offset;  // offset 限制重读字节量(长会话 jsonl 大);正确性靠下面的归属门
-            // 关键(2026-06-14 实测踩到):必须传 spawnStartedAt=replyStartedAt(+expectUserText),让 userEchoSeen 起始
-            // false、只在本轮 reply 的 user echo 之后开闸。否则上一轮【soft-end 早退】留下的 turn_duration(reader 在
-            // text+end_turn 处提前 return、worker 仍会补写 turn_duration)会被当作"本轮结束"→ 立刻空 result(无输出)。
+            // 归属门(2026-06-14 复核结论,勿改回 assumeEchoSeen):op:reply 后必须等本轮 user echo 才开闸——上一轮
+            // soft-end 早退后 worker 晚写的 turn_duration 可能 ts >= replyStartedAt、落在 offset 之后,若起始即开闸会被
+            // 误当本轮结束 → 空 result + 丢消息(codex P1)。
+            // 已知遗留(根因不在此处归属逻辑):op:reply 偶发没让 worker 启动新 turn —— user echo 压根没写进 jsonl(实测
+            // d184d41a "你只需要发简体版"那轮尾部无对应 user 行),echo 等不到 → 卡 hardLimit。属 daemon op:reply 投递时序,
+            // 待查 daemon-client.js;adapter 层可做的缓解是"本轮启动看门狗"(echo 超时即快速失败兜底,而非傻等 1h)。
             for await (const ev of reader.readUntilTurnEnd({ expectUserText: prompt, spawnStartedAt: replyStartedAt, heartbeatMs, hardLimitMs, abortSignal }))
               for (const m of mapEvents(ev, state)) yield m;
             return;
@@ -165,6 +169,7 @@ export function createAdapter(config = {}) {
           } else { throw spawnErr; }
         }
         activeShort = turn.short;
+        state.turnStartAt = turn.spawnStartedAt;  // 同上:本轮耗时用 wall-clock,不信 jsonl turn_duration
         yield { type: "session_init", sessionId: turn.sessionId };
         const reader = new JsonlTailReader(turn.jsonlPath);
         for await (const ev of reader.readUntilTurnEnd({ expectUserText: prompt, spawnStartedAt: turn.spawnStartedAt, heartbeatMs, hardLimitMs, abortSignal }))
