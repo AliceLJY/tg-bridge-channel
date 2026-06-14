@@ -117,11 +117,20 @@ export function createAdapter(config = {}) {
       const heartbeatMs = Number(overrides.heartbeatMs) || Number(process.env.CLI_POOL_HEARTBEAT_MS) || 180000;
       const hardLimitMs = Number(overrides.hardLimitMs) || Number(process.env.CLI_POOL_HARD_LIMIT_MS) || 3600000;
       const state = { accumulatedText: "" };
+      let activeShort = null;  // 当前轮投喂到的 worker short:用户 Stop 时杀它,别让它在后台 bypassPermissions 跑工具(codex P1)
       try {
-        const worker = sessionId ? findLiveWorkerBySession(sessionId) : null;
+        const live = sessionId ? findLiveWorkerBySession(sessionId) : null;
+        // 仅当本轮【显式 /dir 切了 cwd】(overrides.cwd 给了、且和 worker 当前 cwd 不同)才不复用:op:reply 改不了
+        // worker 的 cwd,/dir 后还喂旧 worker 会跑错目录(codex P2)。常规轮不显式给 cwd → 一律复用活 worker,
+        // 不拿 default cwd 去比 roster cwd(/tmp↔/private/tmp 这类符号链接会假不等、误触发 fork)。
+        // model/effort 同理 op:reply 改不了 → 已知限制:per-turn /model//effort 覆盖对【已存在 worker】不即时生效,
+        // 下次新建 worker(/new 或被回收复活)才应用;固定配置的 bot(Alice 用法,/model//effort//dir 已不在菜单)影响极小。
+        const cwdChanged = overrides.cwd && live && overrides.cwd !== live.cwd;
+        const worker = live && !cwdChanged ? live : null;
 
         if (worker) {
-          // —— 常驻 worker 还活:op:reply 进同一会话,零 fork ——
+          // —— 常驻 worker 还活 + cwd 一致:op:reply 进同一会话,零 fork ——
+          activeShort = worker.short;
           const offset = existsSync(worker.jsonlPath) ? statSync(worker.jsonlPath).size : 0;
           const replyStartedAt = Date.now();  // 归属基准:本轮 reply 之前的行(上一轮收尾的 turn_duration 等)按 ts 滤掉
           const ack = await daemon.reply(worker.short, prompt);
@@ -137,18 +146,36 @@ export function createAdapter(config = {}) {
             return;
           }
           if (ack.code !== "ENOJOB") throw new Error(`op:reply failed: ${ack.code || ""} ${ack.error || ""}`.trim());
+          activeShort = null;  // worker 没了,清掉
           // ENOJOB:worker 刚好没了 → 落到下面"无活 worker"分支,--resume 复活
           console.warn(`[cli-reply-adapter] worker for ${String(sessionId).slice(0, 8)} gone (ENOJOB), reviving via --resume`);
         }
 
-        // —— 无活 worker:新建(turn1)或 --resume 复活(闲置被回收 / bridge 重启;复活会 fork 一次出新 sid)——
-        const turn = await spawnWorker(turnConfig, prompt, { resumeSessionId: sessionId || null, model, effort, cwd: turnCwd, systemAppend });
+        // —— 无活 worker(或 cwd 变了):新建(turn1)或 --resume 复活(闲置被回收 / bridge 重启 / /dir 切换;复活会 fork 一次出新 sid)——
+        // spawn 失败兜底(codex P2 的稳妥版):spawnWorker 因超时 / 没拿到 short 等异常 reject 时,若本轮是 resume → 退回全新建重试一次。
+        // 注(2026-06-14 实测):`--bg --resume <失效 sid>` 本身【不会 reject】——它干净退化成一个新会话(exit 0、照常 backgrounded),
+        // 所以 print 引擎那种"session 被删 → 每轮报错卡到 /new"在 --bg 这边天然不存在;这条兜的主要是 spawn 进程本身的异常。
+        let turn;
+        try {
+          turn = await spawnWorker(turnConfig, prompt, { resumeSessionId: sessionId || null, model, effort, cwd: turnCwd, systemAppend });
+        } catch (spawnErr) {
+          if (sessionId) {
+            console.warn(`[cli-reply-adapter] resume spawn failed for ${String(sessionId).slice(0, 8)} (${spawnErr.message}); retrying as new session`);
+            turn = await spawnWorker(turnConfig, prompt, { resumeSessionId: null, model, effort, cwd: turnCwd, systemAppend });
+          } else { throw spawnErr; }
+        }
+        activeShort = turn.short;
         yield { type: "session_init", sessionId: turn.sessionId };
         const reader = new JsonlTailReader(turn.jsonlPath);
         for await (const ev of reader.readUntilTurnEnd({ expectUserText: prompt, spawnStartedAt: turn.spawnStartedAt, heartbeatMs, hardLimitMs, abortSignal }))
           for (const m of mapEvents(ev, state)) yield m;
       } catch (e) {
-        if (abortSignal?.aborted) throw e;  // 用户取消:上抛走 bridge 干净取消
+        if (abortSignal?.aborted) {
+          // 用户 Stop:杀掉本轮 worker,别让它在后台继续 bypassPermissions 跑工具(codex P1)。
+          // 代价:这个常驻会话没了,下条消息会 --resume 复活(fork 一次)——Stop 不频繁,安全 > 保持会话。
+          if (activeShort) daemon.kill(activeShort).catch(() => {});
+          throw e;  // 上抛走 bridge 干净取消
+        }
         console.error(`[cli-reply-adapter] streamQuery err sid=${String(sessionId || "new").slice(0, 8)}: ${e.message}`);
         // 兜底回传:已产出的正文必须发出(防"无输出");success:true 走正文路径,false 会被压成一句话丢正文。
         const acc = (state.accumulatedText || "").trim();
