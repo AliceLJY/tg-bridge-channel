@@ -1984,7 +1984,12 @@ console.log(`  Cron: ${CRON_ENABLED ? "enabled" : "disabled"}`);
 // 链路依赖全是非公开契约。自检把"升级后静默哑掉"变成"开机报警"。
 // 失败不阻塞启动（自检可能误报，bot 保持可用），但给 OWNER 发 TG 警告。
 // 自检 turn 用 haiku + low effort 省 quota；POOL_SELF_CHECK=0 可关闭。
-if (DEFAULT_BACKEND === "claude" && process.env.CLAUDE_POOL_ENGINE === "1" && process.env.POOL_SELF_CHECK !== "0") {
+// 2026-06-14:自检不再限 pool —— reply/print 也走 --bg 同款链路(spawn→roster→jsonl→turn_end),
+// 切纯 reply 后若不放开,6 个 bot 全失去"升级哑掉就报警"保护。三引擎任一启用即自检,用当前引擎测。
+const SELF_CHECK_ENGINE = process.env.CLAUDE_REPLY_ENGINE === "1" ? "reply"
+  : process.env.CLAUDE_PRINT_ENGINE === "1" ? "print"
+  : process.env.CLAUDE_POOL_ENGINE === "1" ? "pool" : null;
+if (DEFAULT_BACKEND === "claude" && SELF_CHECK_ENGINE && process.env.POOL_SELF_CHECK !== "0") {
   setTimeout(async () => {
     const t0 = Date.now();
     try {
@@ -1999,9 +2004,9 @@ if (DEFAULT_BACKEND === "claude" && process.env.CLAUDE_POOL_ENGINE === "1" && pr
         if (ev.type === "result") { ok = ev.success; text = ev.text || ""; }
       }
       if (!ok) throw new Error(text.slice(0, 200) || "result success=false");
-      console.log(`[self-check] pool 链路 OK（${Math.round((Date.now() - t0) / 1000)}s）: ${text.replace(/\s+/g, " ").slice(0, 40)}`);
+      console.log(`[self-check] ${SELF_CHECK_ENGINE} 链路 OK（${Math.round((Date.now() - t0) / 1000)}s）: ${text.replace(/\s+/g, " ").slice(0, 40)}`);
     } catch (e) {
-      console.error(`[self-check] pool 链路 FAILED: ${e.message}`);
+      console.error(`[self-check] ${SELF_CHECK_ENGINE} 链路 FAILED: ${e.message}`);
       await bot.api.sendMessage(
         OWNER_ID,
         `🚨 启动自检失败：--bg 引擎链路不通（${e.message.slice(0, 150)}）。\n多半是 Claude Code 升级改了行为，bot 可能无法正常回复，需要人工排查（/doctor 看版本信息）。`
