@@ -189,7 +189,7 @@ export class JsonlTailReader {
     });
   }
 
-  async* readUntilTurnEnd({ expectUserText, spawnStartedAt = 0, heartbeatMs = 180000, hardLimitMs = 3600000, pollMs = 200, abortSignal } = {}) {
+  async* readUntilTurnEnd({ expectUserText, spawnStartedAt = 0, echoGraceMs = 0, heartbeatMs = 180000, hardLimitMs = 3600000, pollMs = 200, abortSignal } = {}) {
     // 持续盯梢 + 归属/软结束(2026-06-13 codex 复核根治"CC 有输出但 TG 不返回"):
     //  ① 归属:本轮 spawn(spawnStartedAt) 之前的历史行全跳过(fork --resume 会把旧上下文写进新 jsonl);
     //     本轮第一个 user 行即认作 echo,不再死磕 user 内容与 prompt 一字不差——fork/包装后常对不上,
@@ -268,6 +268,14 @@ export class JsonlTailReader {
           // 若日后又冒出新的 echo 形态,这条 warn 会在卡死前把现场打到日志,便于一眼定位、对症扩 extractUserEchoText。
           console.warn(`[cli-pool] turn_duration 已到但 userEchoSeen=false —— 本轮 echo 未被识别,即将卡到 hardLimit。expectUserText=${JSON.stringify((expectUserText || "").slice(0, 40))}`);
         }
+      }
+      // 本轮启动看门狗(echoGraceMs>0 时启用,默认 0=关 → fork-pool/新建轮不受影响):op:reply 偶发没让 worker
+      // 起新 turn(user echo 始终没识别)时,不傻等 hardLimit(1h)→ echoGraceMs 内仍 !userEchoSeen 即快速失败,
+      // 上层据 ECHO_TIMEOUT 兜底提示用户补发(2026-06-14 Alice 实测"偶发一条不返回";worker 健康、会话未坏)。
+      // 放在【读完+处理完本轮新行之后】判定(codex P3):避免 user echo 正好卡在 grace 边界、已写进 jsonl 但本轮
+      // 还没读 → 误判 ECHO_TIMEOUT 让用户白重发。此处 userEchoSeen 已反映本轮所有已读行。
+      if (echoGraceMs && !userEchoSeen && Date.now() - turnStart > echoGraceMs) {
+        throw new Error(`ECHO_TIMEOUT:本轮 ${Math.round(echoGraceMs / 1000)}s 内未识别到 user echo(op:reply 可能未投递成功)`);
       }
       // 静默心跳:距上次 jsonl 活动 ≥ heartbeatMs 且距上次心跳 ≥ heartbeatMs → 报"还在跑",不退出
       const now = Date.now();
