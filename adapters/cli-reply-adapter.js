@@ -116,6 +116,9 @@ export function createAdapter(config = {}) {
       const turnCwd = cwd || defaultCwd;
       const heartbeatMs = Number(overrides.heartbeatMs) || Number(process.env.CLI_POOL_HEARTBEAT_MS) || 180000;
       const hardLimitMs = Number(overrides.hardLimitMs) || Number(process.env.CLI_POOL_HARD_LIMIT_MS) || 3600000;
+      // 本轮启动看门狗:op:reply 偶发没投递成功(worker 没起新 turn、user echo 不出现)时,等 echoGraceMs 即快速失败,
+      // 而非闷等 hardLimit(1h)。只用于 op:reply 分支(下面新建/复活轮的 user echo 必到、不传)。可用 env 调,默认 90s。
+      const echoGraceMs = Number(overrides.echoGraceMs) || Number(process.env.CLI_REPLY_ECHO_GRACE_MS) || 90000;
       const state = { accumulatedText: "", turnStartAt: 0 };
       let activeShort = null;  // 当前轮投喂到的 worker short:用户 Stop 时杀它,别让它在后台 bypassPermissions 跑工具(codex P1)
       try {
@@ -145,7 +148,7 @@ export function createAdapter(config = {}) {
             // 已知遗留(根因不在此处归属逻辑):op:reply 偶发没让 worker 启动新 turn —— user echo 压根没写进 jsonl(实测
             // d184d41a "你只需要发简体版"那轮尾部无对应 user 行),echo 等不到 → 卡 hardLimit。属 daemon op:reply 投递时序,
             // 待查 daemon-client.js;adapter 层可做的缓解是"本轮启动看门狗"(echo 超时即快速失败兜底,而非傻等 1h)。
-            for await (const ev of reader.readUntilTurnEnd({ expectUserText: prompt, spawnStartedAt: replyStartedAt, heartbeatMs, hardLimitMs, abortSignal }))
+            for await (const ev of reader.readUntilTurnEnd({ expectUserText: prompt, spawnStartedAt: replyStartedAt, echoGraceMs, heartbeatMs, hardLimitMs, abortSignal }))
               for (const m of mapEvents(ev, state)) yield m;
             return;
           }
@@ -182,6 +185,14 @@ export function createAdapter(config = {}) {
           throw e;  // 上抛走 bridge 干净取消
         }
         console.error(`[cli-reply-adapter] streamQuery err sid=${String(sessionId || "new").slice(0, 8)}: ${e.message}`);
+        // 本轮启动看门狗触发:op:reply 偶发没投递成功(worker 没起新 turn)。worker 仍健康、会话未坏,下条消息照常
+        // 续接 —— 给用户明确可操作的提示(纯文本、TG 友好),而非技术错误信息或闷卡。
+        // success:true(codex P3):这是预期内的恢复引导,不是 backend 故障。若用 false,bridge sendFinalResult 会
+        // 套成"CC(rc) 出错:…完整日志见后台"= 把好心提示显示成报错。用 true 让这句纯文本提示原样发给用户。
+        if ((e.message || "").startsWith("ECHO_TIMEOUT")) {
+          yield { type: "result", success: true, text: "这条好像没递到我这边(偶发投递问题),我还在、会话没坏,把刚才那句重发一遍就行～" };
+          return;
+        }
         // 兜底回传:已产出的正文必须发出(防"无输出");success:true 走正文路径,false 会被压成一句话丢正文。
         const acc = (state.accumulatedText || "").trim();
         if (acc) yield { type: "result", success: true, text: acc + `\n\n———\n⚠️ 注:这轮中途出了点状况(${(e.message || "").slice(0, 80)}),以上是已产出的内容。` };

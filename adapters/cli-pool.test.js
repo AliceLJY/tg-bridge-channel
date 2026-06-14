@@ -30,6 +30,36 @@ describe("JsonlTailReader.readUntilTurnEnd", () => {
     expect(events[events.length - 1]).toMatchObject({ type: "turn_end", durationMs: 1234 });
   });
 
+  test("echoGraceMs 看门狗:op:reply 偶发没投递(本轮 user echo 始终不来)→ echoGraceMs 内快速失败抛 ECHO_TIMEOUT,不傻等 hardLimit", async () => {
+    const spawnAt = Date.parse("2026-06-14T10:00:00.000Z");
+    // 只有 spawn 之前的历史(被 ts 门跳过);本轮 user echo 从未写入 = op:reply 没让 worker 起新 turn(实测 d184d41a)
+    writeFileSync(path, [
+      J({ type: "user", message: { content: "上一轮" }, timestamp: "2026-06-14T09:59:00.000Z" }),
+      J({ type: "system", subtype: "turn_duration", durationMs: 5, timestamp: "2026-06-14T09:59:01.000Z" }),
+    ].join("\n") + "\n");
+    const reader = new JsonlTailReader(path);
+    let err;
+    try {
+      for await (const _ of reader.readUntilTurnEnd({ spawnStartedAt: spawnAt, echoGraceMs: 120, pollMs: 10, heartbeatMs: 5000, hardLimitMs: 10000 })) { /* drain */ }
+    } catch (e) { err = e; }
+    expect(err?.message).toMatch(/ECHO_TIMEOUT/);  // echoGraceMs(120ms)快速失败,而非傻等 hardLimit(10s)
+  });
+
+  test("echoGraceMs 看门狗只在 echo 没来时管:user echo 已到的慢任务不误触发(走 hardLimit 不走 ECHO_TIMEOUT)", async () => {
+    const spawnAt = Date.parse("2026-06-14T10:00:00.000Z");
+    // 本轮 user echo 已到(userEchoSeen 置位),但迟迟没 turn_duration/end_turn → 慢任务,看门狗不该误杀
+    writeFileSync(path, [
+      J({ type: "user", message: { content: "干个长活" }, timestamp: "2026-06-14T10:00:01.000Z" }),
+    ].join("\n") + "\n");
+    const reader = new JsonlTailReader(path);
+    let err;
+    try {
+      for await (const _ of reader.readUntilTurnEnd({ spawnStartedAt: spawnAt, echoGraceMs: 100, pollMs: 10, heartbeatMs: 5000, hardLimitMs: 250 })) { /* drain */ }
+    } catch (e) { err = e; }
+    expect(err?.message).toMatch(/hard limit/);        // echo 已到 → 看门狗不误伤,走 hardLimit 兜底
+    expect(err?.message).not.toMatch(/ECHO_TIMEOUT/);
+  });
+
   test("忽略不匹配 user echo 的 assistant 块(防 peek 注入串台)", async () => {
     writeFileSync(path, [
       J({ type: "user", message: { content: "SOMEONE ELSE" } }),
