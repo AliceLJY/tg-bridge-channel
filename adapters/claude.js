@@ -4,6 +4,7 @@ import { readdirSync, statSync, createReadStream } from "fs";
 import { basename, join } from "path";
 import { homedir } from "os";
 import { createInterface } from "readline";
+import { stripMalformedToolCall } from "./sanitize-text.js";
 
 // SDK 0.2.117+ 砍掉了 SDK 内置的 cli.js，必须显式传 claude CLI 路径。
 // 优先走环境变量（方便 launchd 兜底），否则回退默认 ~/.local/bin/claude。
@@ -672,7 +673,8 @@ export function createAdapter(config = {}) {
                 input: block.input,
               };
             } else if (block.type === "text" && block.text) {
-              yield { type: "text", text: block.text };
+              const clean = stripMalformedToolCall(block.text);  // 剥模型 malformed 的工具调用文本 XML
+              if (clean) yield { type: "text", text: clean };
             }
           }
         }
@@ -731,7 +733,7 @@ export function createAdapter(config = {}) {
           yield {
             type: "result",
             success: msg.subtype === "success",
-            text: resultText,
+            text: stripMalformedToolCall(resultText),
             cost: msg.total_cost_usd,
             duration: msg.duration_ms,
           };

@@ -23,6 +23,7 @@ import { homedir } from "node:os";
 import { JsonlTailReader, buildTurnArgs, readRoster } from "./cli-pool.js";
 import { DaemonClient, findLiveWorkerBySession, sessionJsonlPath } from "./daemon-client.js";
 import { listSessionFiles, findSessionFile, parseSessionFile } from "./claude-sessions.js";
+import { stripMalformedToolCall } from "./sanitize-text.js";
 
 const CLAUDE_CLI_PATH = process.env.CLAUDE_CLI_PATH || join(homedir(), ".local/bin/claude");
 
@@ -67,7 +68,11 @@ function* mapEvents(ev, state) {
   if (ev.type === "session_init") { yield ev; return; }
   if (ev.type === "user_echo") return;
   if (ev.type === "idle_heartbeat") { yield { type: "heartbeat", idleSec: ev.idleSec, elapsedSec: ev.elapsedSec }; return; }
-  if (ev.type === "text") { state.accumulatedText += ev.text; yield { type: "text", text: ev.text }; return; }
+  if (ev.type === "text") {
+    const clean = stripMalformedToolCall(ev.text);  // 剥模型 malformed 的 <invoke> 文本 XML(见 sanitize-text.js)
+    if (clean) { state.accumulatedText += clean; yield { type: "text", text: clean }; }
+    return;
+  }
   if (ev.type === "thinking") return;
   if (ev.type === "tool_use") {
     if (ev.name === "AskUserQuestion") return;
