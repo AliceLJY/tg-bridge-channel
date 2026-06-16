@@ -11,6 +11,7 @@
 
 import { createCliPool } from "./cli-pool.js";
 import { listSessionFiles, findSessionFile, parseSessionFile } from "./claude-sessions.js";
+import { stripMalformedToolCall } from "./sanitize-text.js";
 
 // 单例 pool —— 同进程多 chat 共享一套 config 默认值(方案 C 无常驻连接,纯配置容器)
 let _pool = null;
@@ -48,8 +49,11 @@ function* mapEvents(poolEvent, state) {
     return;
   }
   if (poolEvent.type === "text") {
-    state.accumulatedText += poolEvent.text;
-    yield { type: "text", text: poolEvent.text };
+    const clean = stripMalformedToolCall(poolEvent.text);  // 剥模型 malformed 的 <invoke> 文本 XML(见 sanitize-text.js)
+    if (clean) {
+      state.accumulatedText += clean;
+      yield { type: "text", text: clean };
+    }
   } else if (poolEvent.type === "thinking") {
     // bridge 当前不展示 thinking,跳过避免污染
   } else if (poolEvent.type === "tool_use") {

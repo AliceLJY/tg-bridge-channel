@@ -10,6 +10,8 @@
 // 调用方约定:遇到 yield 出的 { type:"result" } 后自行 break(result 是一轮终点)。
 // 本函数在检测到 SDK 把 API 400 当 success 返回时会 throw,让上层走 resume 重试。
 
+import { stripMalformedToolCall } from "./sanitize-text.js";
+
 const FILE_EXTS = "png|jpg|jpeg|gif|webp|pdf|docx|xlsx|svg";
 
 export function* mapClaudeMessage(msg, { logger = console } = {}) {
@@ -49,7 +51,8 @@ export function* mapClaudeMessage(msg, { logger = console } = {}) {
         }
         yield { type: "progress", toolName: block.name, input: block.input };
       } else if (block.type === "text" && block.text) {
-        yield { type: "text", text: block.text };
+        const clean = stripMalformedToolCall(block.text);  // 剥模型 malformed 的 <invoke> 文本 XML(见 sanitize-text.js)
+        if (clean) yield { type: "text", text: clean };
       }
     }
   }
@@ -88,6 +91,6 @@ export function* mapClaudeMessage(msg, { logger = console } = {}) {
     if (resultText.startsWith("API Error:") && /invalid.*signature|invalid_request_error/i.test(resultText)) {
       throw new Error(resultText);
     }
-    yield { type: "result", success: msg.subtype === "success", text: resultText, cost: msg.total_cost_usd, duration: msg.duration_ms };
+    yield { type: "result", success: msg.subtype === "success", text: stripMalformedToolCall(resultText), cost: msg.total_cost_usd, duration: msg.duration_ms };
   }
 }
