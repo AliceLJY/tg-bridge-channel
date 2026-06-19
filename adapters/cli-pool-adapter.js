@@ -28,7 +28,7 @@ function ensurePool(initConfig) {
 // 把 cli-pool 内部事件映射成 bridge 统一格式。
 // 关键:turn_end 时 result.text 必须带本 turn 累积的全文 — bridge 用 result.text 兜底发 TG;
 // 不累积 → bridge 报"无输出"(2026-05-26 实测)。
-function* mapEvents(poolEvent, state) {
+export function* mapEvents(poolEvent, state) {
   if (poolEvent.type === "session_init") { yield poolEvent; return; }
   if (poolEvent.type === "user_echo") return;
   if (poolEvent.type === "idle_heartbeat") {
@@ -55,7 +55,9 @@ function* mapEvents(poolEvent, state) {
       yield { type: "text", text: clean };
     }
   } else if (poolEvent.type === "thinking") {
-    // bridge 当前不展示 thinking,跳过避免污染
+    // thinking 块 → "🤔 思考中" 进度态(长思考时消灭"以为卡死"的错觉);progress.js 把连续 thinking
+    // 合并为单行、不刷屏。"__thinking__" 是与 progress.js 约定的哨兵 toolName。
+    yield { type: "progress", toolName: "__thinking__" };
   } else if (poolEvent.type === "tool_use") {
     // AskUserQuestion 在非交互 pool 里已被 PreToolUse hook 拦掉真执行(见 cli-pool.js buildSettings +
     // scripts/block-interactive-ask.sh):它作为 blocked tool_use 出现在 jsonl,模型收到 deny reason 后
