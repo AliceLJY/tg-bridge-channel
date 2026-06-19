@@ -64,7 +64,7 @@ async function spawnWorker(config, prompt, { resumeSessionId, model, effort, cwd
 
 // pool 风格事件映射(与 cli-pool-adapter 一致):累积 text(turn_end 用它兜底回传 —— bridge 用 result.text
 // 发 TG,不累积会"无输出");AskUserQuestion 静默跳过(hook 已拦、模型自主续写);idle_heartbeat→heartbeat。
-function* mapEvents(ev, state) {
+export function* mapEvents(ev, state) {
   if (ev.type === "session_init") { yield ev; return; }
   if (ev.type === "user_echo") return;
   if (ev.type === "idle_heartbeat") { yield { type: "heartbeat", idleSec: ev.idleSec, elapsedSec: ev.elapsedSec }; return; }
@@ -73,7 +73,13 @@ function* mapEvents(ev, state) {
     if (clean) { state.accumulatedText += clean; yield { type: "text", text: clean }; }
     return;
   }
-  if (ev.type === "thinking") return;
+  if (ev.type === "thinking") {
+    // thinking 块 → "🤔 思考中" 进度态(长思考 + 纯文字回复时消灭"以为卡死"的错觉)。
+    // 只取它的"出现"作进度信号,不把模型内心独白发到 TG。"__thinking__" 是与 progress.js 约定的哨兵
+    // toolName;progress.js 把连续 thinking 合并为单行、不刷屏。
+    yield { type: "progress", toolName: "__thinking__" };
+    return;
+  }
   if (ev.type === "tool_use") {
     if (ev.name === "AskUserQuestion") return;
     yield { type: "progress", toolName: ev.name, input: ev.input };

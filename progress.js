@@ -121,6 +121,20 @@ export function createProgressTracker(ctx, chatId, verboseLevel = 1, backendLabe
     if (event.type === "progress") {
       const toolName = event.toolName || "action";
       if (SILENT_TOOLS.has(toolName)) return;
+
+      // 思考态:模型在 thinking(reply/pool 引擎用哨兵 toolName "__thinking__" 上报)。长思考 + 纯文字
+      // 回复时,这是"还活着"的关键信号 —— 消灭"以为卡死"的错觉。多条连续 thinking 只维持单行
+      // "🤔 思考中…",不堆叠刷屏;后续真正的 text/tool_use 自然接续在它下面。
+      if (toolName === "__thinking__") {
+        const thinkingLine = "🤔 思考中…";
+        if (entries[entries.length - 1] !== thinkingLine) {
+          entries.push(thinkingLine);
+          if (entries.length > MAX_ENTRIES) entries = entries.slice(-MAX_ENTRIES);
+        }
+        scheduleEdit();
+        return;
+      }
+
       const icon = TOOL_ICONS[toolName] || "🔧";
 
       // ── 特殊工具：Edit → inline diff 预览 ──
