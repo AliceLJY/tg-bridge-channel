@@ -48,16 +48,30 @@ async function spawnWorker(config, prompt, { resumeSessionId, model, effort, cwd
       const m = out.match(/backgrounded\s+·\s+([a-f0-9]{8})/);
       if (!m) { reject(new Error(`no short in stdout: ${out.slice(0, 150)}; stderr: ${err.slice(0, 150)}`)); return; }
       const short = m[1];
-      for (let i = 0; i < 24; i++) {
-        await new Promise(r => setTimeout(r, 250));
+      // 等 daemon 把 fork 出的新 sessionId 注册进 roster。原写死 6s(24×250ms),对 opus max + 大会话
+      // (隔久了攒得长,--resume 要先加载完整历史才 fork 出新 sid)经常不够 → 超时后上层退化成新会话、丢上下文
+      // (Alice 实测"隔 5 小时以上接不上"的根因)。提到默认 30s 且 env 可配;兜底读 dispatch.sessionId
+      // (顶层 sessionId 偶发晚于 dispatch 字段填充)。sawWorker 留作诊断:区分"worker 没注册"(可能真没起)
+      // 与"注册了但 sessionId 没填"(慢)。
+      const rosterWaitMs = Number(process.env.CLI_REPLY_ROSTER_WAIT_MS) || 30000;
+      const pollMs = 250;
+      let sawWorker = false;
+      for (let i = 0; i < Math.ceil(rosterWaitMs / pollMs); i++) {
+        await new Promise(r => setTimeout(r, pollMs));
         const w = readRoster()?.workers?.[short];
-        if (w?.sessionId) {
+        if (w) sawWorker = true;
+        const sid = w?.sessionId || w?.dispatch?.sessionId;
+        if (sid) {
           const c = w.cwd || spawnCwd;
-          resolve({ short, sessionId: w.sessionId, cwd: c, jsonlPath: sessionJsonlPath(w.sessionId, c), spawnStartedAt });
+          resolve({ short, sessionId: sid, cwd: c, jsonlPath: sessionJsonlPath(sid, c), spawnStartedAt });
           return;
         }
       }
-      reject(new Error(`roster did not surface sessionId for short ${short}`));
+      // roster 没浮现 sessionId:worker 可能起来了但 fork 的新 sid 注册太慢(也可能真没起)。必须 stop 掉它再失败——
+      // 否则它带着【新 sid】在后台继续 bypassPermissions 跑工具,而 bridge 存的是【旧 sid】、findLiveWorkerBySession
+      // 找不到它,上层重发只会再 fork 一个 worker = 双跑 + 重复副作用(codex P2)。stop 后重发是干净的单 worker。
+      try { spawn(CLAUDE_CLI_PATH, ["stop", short], { stdio: "ignore" }).unref?.(); } catch { /* best-effort */ }
+      reject(new Error(`roster did not surface sessionId for short ${short} (waited ${rosterWaitMs}ms, sawWorker=${sawWorker})`));
     });
   });
 }
@@ -177,8 +191,20 @@ export function createAdapter(config = {}) {
         try {
           turn = await spawnWorker(turnConfig, prompt, { resumeSessionId: sessionId || null, model, effort, cwd: turnCwd, systemAppend });
         } catch (spawnErr) {
+          const sid8 = String(sessionId || "").slice(0, 8);
+          // roster 超时:spawnWorker 已 stop 掉那个慢 worker(防它带新 sid 后台双跑 / 重复副作用,codex P2)。
+          // 绝不静默退化成新会话(resumeSessionId:null)—— 那会把旧上下文整段丢掉(Alice"隔久了接不上"的真凶)。
+          // 保留旧 sessionId(bridge 不更新 → 下条消息仍 --resume 同一段历史),提示重发:重发是干净的单 worker、
+          // 窗口已 30s,大概率接上;上下文始终不丢。
+          if (sessionId && (spawnErr.message || "").includes("roster did not surface sessionId")) {
+            console.warn(`[cli-reply-adapter] resume slow for ${sid8} (${spawnErr.message}); stopped slow worker, preserving session, asking resend`);
+            yield { type: "result", success: true, text: "刚才那条复活旧会话慢了点(会话没丢),隔两三秒再发一遍就接上了～" };
+            return;
+          }
+          // 其他失败(spawn 30s 超时 / stdout 没给 short = worker 真没起来):旧会话这条确实接不上,
+          // 退回全新重试一次(保留原行为,至少给用户一个能回话的会话)。
           if (sessionId) {
-            console.warn(`[cli-reply-adapter] resume spawn failed for ${String(sessionId).slice(0, 8)} (${spawnErr.message}); retrying as new session`);
+            console.warn(`[cli-reply-adapter] resume spawn failed for ${sid8} (${spawnErr.message}); retrying as new session`);
             turn = await spawnWorker(turnConfig, prompt, { resumeSessionId: null, model, effort, cwd: turnCwd, systemAppend });
           } else { throw spawnErr; }
         }
