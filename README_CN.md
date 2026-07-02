@@ -26,6 +26,50 @@
 
 **主路径**（经过日常实际使用打磨的部分）是私聊单代理控制 Claude Code + 下方的 pool 引擎。并行会话和 A2A 协作可用但属实验性质；Gemini 后端和 `local-agent` 执行器是兼容层，实际使用频率低得多。
 
+## 架构
+
+```mermaid
+flowchart TB
+    subgraph tg["Telegram — 聊天窗口就是终端"]
+        U["机主<br/>仅 ownerTelegramId"]
+        BC["claude bot"]
+        BX["codex bot"]
+        BG["gemini bot"]
+    end
+
+    U <--> BC
+    U <--> BX
+    U <--> BG
+
+    subgraph bridge["tg-bridge-channel · Bun"]
+        ROUTER["路由 + 每会话偏好<br/>/model /effort /dir · Stop"]
+        ENGINE{"claude 引擎?"}
+        SDK["SDK 适配器<br/>adapters/claude.js"]
+        POOL["pool 引擎<br/>adapters/cli-pool-adapter.js"]
+        CTX[("共享上下文<br/>SQLite / Redis")]
+        GUARD["PreToolUse 守卫<br/>拦截毁灭性 Bash"]
+    end
+
+    BC --> ROUTER
+    BX --> ROUTER
+    BG --> ROUTER
+    ROUTER --> ENGINE
+    ENGINE -->|"默认"| SDK
+    ENGINE -->|"CLAUDE_POOL_ENGINE=1"| POOL
+
+    SDK --> CC["Claude Code 会话"]
+    POOL -->|"每轮 fork 一个 claude --bg；--resume 续接上下文"| CC
+    ROUTER --> CX["Codex"]
+    ROUTER --> GM["Gemini"]
+
+    CC -.->|"tail 转录 .jsonl，流式回传"| POOL
+    GUARD -.->|"每会话注入"| CC
+    ROUTER <--> CTX
+
+    BC <-.->|"A2A-TG 信封协议（实验性）"| BX
+    BX <-.-> BG
+```
+
 ## 引擎层
 
 `claude` 后端有两套可互换的引擎实现，运行时由 `CLAUDE_POOL_ENGINE` 环境变量选择：
