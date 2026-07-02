@@ -74,6 +74,38 @@ export function sanitizeBackendError(rawText, { maxLen = 200 } = {}) {
   return `${short}（完整日志见后台）`;
 }
 
+// ── 进度广播（Progress Broadcast, PB）──
+// CC 在长任务里主动打的进度标记行，独立发成一条留档消息，区别于会被 turn 末删除的
+// streaming preview。解决长任务中途 TG 只看到临时预览、事后无留档、用户误以为卡住的问题。
+// 标记语法：行首 ::PB:: + 至少一个空格/Tab + 内容。前缀选正文里绝不会自然出现的序列，
+// 避免把普通句子（含对 "core_task_progress" 一类词的讨论）误当进度广播。
+const PB_LINE_RE = /^::PB::[ \t]+(.+?)[ \t]*$/;
+
+// 从流式增量文本里按整行提取进度标记，维护跨 chunk 的行缓冲（未以 \n 结束的残行留到下次）。
+// @param {string} buffer - 上次遗留的未完成行 + 本次新增增量（调用方负责拼接后传入）
+// @returns {{ messages: string[], buffer: string }} messages=本次提取到的进度内容；buffer=残余未完成行
+export function extractProgressBroadcasts(buffer) {
+  const messages = [];
+  let rest = buffer;
+  let nlIdx;
+  while ((nlIdx = rest.indexOf("\n")) >= 0) {
+    const line = rest.slice(0, nlIdx);
+    rest = rest.slice(nlIdx + 1);
+    const m = line.match(PB_LINE_RE);
+    if (m) messages.push(m[1]);
+  }
+  return { messages, buffer: rest };
+}
+
+// 从最终结果正文里剔除进度标记行（已单独广播过，避免在结论里重复出现），并压掉多余空行。
+export function stripProgressBroadcasts(text) {
+  if (!text) return text;
+  return text
+    .replace(/^::PB::[ \t].*$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export function estimateCodeRatio(text) {
   const codeBlocks = text.match(/```[\s\S]*?```/g) || [];
   const codeLen = codeBlocks.reduce((sum, block) => sum + block.length, 0);

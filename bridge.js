@@ -55,7 +55,7 @@ import { withRetry, classifyError } from "./send-retry.js";
 import { protectFileReferences } from "./file-ref-protect.js";
 import { createStreamingPreview } from "./streaming-preview.js";
 import { markdownToTelegramHTML, hasMarkdownFormatting } from "./markdown-to-tg.js";
-import { extractFilePathsFromText, sanitizeBackendError, sendCapturedOutputs, sendFinalResult } from "./output-relay.js";
+import { extractFilePathsFromText, extractProgressBroadcasts, sanitizeBackendError, sendCapturedOutputs, sendFinalResult, stripProgressBroadcasts } from "./output-relay.js";
 import { createTaskFinalizer, finishTurnProgress, saveCapturedSession } from "./turn-state.js";
 import { registerCommands } from "./commands/index.js";
 import { startEntrypointPatcher } from "./scripts/patch-entrypoint.js";
@@ -1233,6 +1233,21 @@ async function processPrompt(ctx, prompt) {
       : null;
     let previewActivated = false;
     let accumulatedText = "";
+    // 进度广播（PB）：识别 CC 主动打的 ::PB:: 标记行，单独发一条留档消息。
+    // 区别于 turn 末会被删除的 streaming preview —— 解决长任务中途 TG 无留档、用户误以为卡住的问题。
+    let pbBuffer = "";          // 跨 chunk 行缓冲（未以 \n 结束的残行）
+    const pbSent = new Set();   // 去重：同一进度内容不重复广播
+    const broadcastProgress = async (incoming) => {
+      pbBuffer += incoming;
+      const pb = extractProgressBroadcasts(pbBuffer);
+      pbBuffer = pb.buffer;
+      for (const msg of pb.messages) {
+        const key = msg.trim();
+        if (!key || pbSent.has(key)) continue;
+        pbSent.add(key);
+        await sendLong(ctx, `🔹 ${key}`).catch((e) => console.error(`[Bridge] 进度广播失败: ${e.message}`));
+      }
+    };
 
     // AbortController: 支持 Stop 按钮中断
     const abortController = new AbortController();
@@ -1328,6 +1343,8 @@ async function processPrompt(ctx, prompt) {
         // 从中间文本中扫描文件路径
         if (event.type === "text" && event.text) {
           extractFilePathsFromText(event.text, capturedFiles);
+          // 进度广播：识别 ::PB:: 标记行，实时发一条留档消息（长任务中途可见）
+          await broadcastProgress(event.text);
         }
 
         // Streaming preview: 累积文本，达到阈值后接管 progress 消息
@@ -1356,7 +1373,17 @@ async function processPrompt(ctx, prompt) {
         // 捕获最终结果
         if (event.type === "result") {
           resultSuccess = event.success;
-          resultText = event.text || "";
+          // 兜底：从完整结果文本再扫一遍 PB 标记（覆盖只发 result、不发 text 增量的后端），
+          // 去重后补广播漏掉的，再从正文剔除所有标记行避免重复
+          const { messages: finalPb } = extractProgressBroadcasts((event.text || "") + "\n");
+          for (const msg of finalPb) {
+            const key = msg.trim();
+            if (key && !pbSent.has(key)) {
+              pbSent.add(key);
+              await sendLong(ctx, `🔹 ${key}`).catch((e) => console.error(`[Bridge] 进度广播失败: ${e.message}`));
+            }
+          }
+          resultText = stripProgressBroadcasts(event.text || "");
           // 从最终结果文本中也扫描文件路径
           extractFilePathsFromText(resultText, capturedFiles);
           const costStr = event.cost != null ? ` 花费 $${event.cost.toFixed(4)}` : "";
