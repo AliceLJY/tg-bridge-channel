@@ -4,7 +4,9 @@ import {
   detectCodeLang,
   estimateCodeRatio,
   extractFilePathsFromText,
+  extractProgressBroadcasts,
   sanitizeBackendError,
+  stripProgressBroadcasts,
 } from "./output-relay.js";
 
 describe("output relay helpers", () => {
@@ -83,5 +85,30 @@ describe("sanitizeBackendError", () => {
     expect(sanitizeBackendError("")).toBe("后端未返回错误详情");
     expect(sanitizeBackendError(null)).toBe("后端未返回错误详情");
     expect(sanitizeBackendError(undefined)).toBe("后端未返回错误详情");
+  });
+});
+
+describe("progress broadcast (PB)", () => {
+  test("extracts complete PB lines across streaming chunks, keeps partial line buffered", () => {
+    const r1 = extractProgressBroadcasts("正文一行\n::PB:: 阶段一 图生");
+    expect(r1.messages).toEqual([]);
+    expect(r1.buffer).toBe("::PB:: 阶段一 图生");
+
+    const r2 = extractProgressBroadcasts(r1.buffer + "成完成\n普通正文\n::PB:: 阶段二 排版\n");
+    expect(r2.messages).toEqual(["阶段一 图生成完成", "阶段二 排版"]);
+    expect(r2.buffer).toBe("");
+  });
+
+  test("only matches the exact line-start ::PB:: prefix, never normal prose", () => {
+    const r = extractProgressBroadcasts(
+      "句中出现 ::PB:: 不在行首不算\n我们讨论 core_task_progress: 这种也不算\n",
+    );
+    expect(r.messages).toEqual([]);
+    expect(r.buffer).toBe("");
+  });
+
+  test("strips broadcast lines from the final result body and collapses blank runs", () => {
+    const body = "开头\n::PB:: 阶段一\n\n正文段落\n::PB:: 阶段二\n结尾";
+    expect(stripProgressBroadcasts(body)).toBe("开头\n\n正文段落\n\n结尾");
   });
 });
