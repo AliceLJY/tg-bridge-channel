@@ -26,6 +26,50 @@
 
 The **primary, battle-tested path** is single-agent private-chat control of Claude Code via the pool engine below. Parallel sessions and A2A collaboration work but are experimental; the Gemini backend and the `local-agent` executor are compatibility layers that see far less real-world use.
 
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph tg["Telegram — the chat IS the terminal"]
+        U["Owner<br/>only ownerTelegramId"]
+        BC["claude bot"]
+        BX["codex bot"]
+        BG["gemini bot"]
+    end
+
+    U <--> BC
+    U <--> BX
+    U <--> BG
+
+    subgraph bridge["tg-bridge-channel · Bun"]
+        ROUTER["Router + per-chat prefs<br/>/model /effort /dir · Stop"]
+        ENGINE{"claude engine?"}
+        SDK["SDK adapter<br/>adapters/claude.js"]
+        POOL["pool engine<br/>adapters/cli-pool-adapter.js"]
+        CTX[("shared context<br/>SQLite / Redis")]
+        GUARD["PreToolUse guard<br/>blocks catastrophic Bash"]
+    end
+
+    BC --> ROUTER
+    BX --> ROUTER
+    BG --> ROUTER
+    ROUTER --> ENGINE
+    ENGINE -->|"default"| SDK
+    ENGINE -->|"CLAUDE_POOL_ENGINE=1"| POOL
+
+    SDK --> CC["Claude Code session"]
+    POOL -->|"one claude --bg fork per turn; --resume keeps context"| CC
+    ROUTER --> CX["Codex"]
+    ROUTER --> GM["Gemini"]
+
+    CC -.->|"tail transcript .jsonl, stream reply"| POOL
+    GUARD -.->|"injected per session"| CC
+    ROUTER <--> CTX
+
+    BC <-.->|"A2A-TG envelope (experimental)"| BX
+    BX <-.-> BG
+```
+
 ## Engine layer
 
 The `claude` backend ships two interchangeable engine implementations, selected at runtime by the `CLAUDE_POOL_ENGINE` environment variable:
