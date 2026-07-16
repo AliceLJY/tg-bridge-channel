@@ -4,7 +4,7 @@
 
 **Self-hosted Telegram bridge for AI coding agents — the chat IS the terminal.**
 
-*Drive Claude Code / Codex / Gemini from a Telegram chat, backed by `claude --bg` Agent View background sessions for subscription-billed Claude Code, and the A2A-TG envelope protocol for multi-agent collaboration in group chats.*
+*Drive Claude Code / Codex / Gemini from a Telegram chat through SDK or local CLI engines, with the A2A-TG envelope protocol for multi-agent collaboration in group chats.*
 
 [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Bun](https://img.shields.io/badge/Runtime-Bun-f9f1e1?logo=bun)](https://bun.sh)
@@ -46,6 +46,8 @@ flowchart TB
         ENGINE{"claude engine?"}
         SDK["SDK adapter<br/>adapters/claude.js"]
         POOL["pool engine<br/>adapters/cli-pool-adapter.js"]
+        PRINT["print engine<br/>adapters/cli-print-adapter.js"]
+        REPLY["reply engine<br/>adapters/cli-reply-adapter.js"]
         CTX[("shared context<br/>SQLite / Redis")]
         GUARD["PreToolUse guard<br/>blocks catastrophic Bash"]
     end
@@ -56,13 +58,19 @@ flowchart TB
     ROUTER --> ENGINE
     ENGINE -->|"default"| SDK
     ENGINE -->|"CLAUDE_POOL_ENGINE=1"| POOL
+    ENGINE -->|"CLAUDE_PRINT_ENGINE=1"| PRINT
+    ENGINE -->|"CLAUDE_REPLY_ENGINE=1"| REPLY
 
     SDK --> CC["Claude Code session"]
     POOL -->|"one claude --bg fork per turn; --resume keeps context"| CC
+    PRINT -->|"claude --print stream-json"| CC
+    REPLY -->|"persistent --bg + local op:reply"| CC
     ROUTER --> CX["Codex"]
     ROUTER --> GM["Gemini"]
 
-    CC -.->|"tail transcript .jsonl, stream reply"| POOL
+    CC -.->|"tail transcript .jsonl"| POOL
+    CC -.->|"stream-json result"| PRINT
+    CC -.->|"roster/jsonl + daemon reply"| REPLY
     GUARD -.->|"injected per session"| CC
     ROUTER <--> CTX
 
@@ -72,12 +80,14 @@ flowchart TB
 
 ## Engine layer
 
-The `claude` backend ships two interchangeable engine implementations, selected at runtime by the `CLAUDE_POOL_ENGINE` environment variable:
+The `claude` backend ships four engine implementations. Environment-variable priority is reply → print → pool → SDK:
 
-| Mode | Implementation | How it works |
-|---|---|---|
-| default | `adapters/claude.js` | Programmatic adapter built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-sdk). |
-| `CLAUDE_POOL_ENGINE=1` | `adapters/cli-pool-adapter.js` | Per-**turn** `claude --bg` fork workers built on [background sessions](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-view) (Agent View). |
+| Mode | Implementation | How it works | Status |
+|---|---|---|---|
+| default | `adapters/claude.js` | Programmatic adapter built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-sdk). | Fallback / API-billed path |
+| `CLAUDE_POOL_ENGINE=1` | `adapters/cli-pool-adapter.js` | Per-**turn** `claude --bg [--resume]` workers; output is tailed from the forked transcript. | Primary owner-used CLI path |
+| `CLAUDE_PRINT_ENGINE=1` | `adapters/cli-print-adapter.js` | `claude --print --output-format stream-json [--resume]`; no daemon reply socket. | Experimental |
+| `CLAUDE_REPLY_ENGINE=1` | `adapters/cli-reply-adapter.js` | Persistent `claude --bg` worker plus an authenticated local daemon `op:reply`. | Experimental; highest upgrade coupling |
 
 The pool engine spawns one short-lived `claude --bg` worker **per turn**: each inbound Telegram message launches `claude --bg [--resume <session-id>] "<prompt>"`, which forks a new session inheriting the full conversation history, streams the reply back by tailing the forked session's local transcript file, and stops the worker when the turn completes. The bridge persists the forked session id per chat and resumes it on the next message, so the conversation stays continuous across turns. Per-chat `/model`, `/effort` and `/dir` preferences plus the bridge's system-prompt scaffold are passed to every spawn as plain CLI flags.
 
@@ -86,11 +96,24 @@ Two practical caveats of the fork-per-turn design:
 - **Quota grows with conversation length.** Every turn re-forks the full history, so very long conversations consume subscription usage superlinearly. Start a fresh session (`/new`) when switching topics.
 - **Silence isn't a hang, and a timeout doesn't kill the task.** When a long-running task goes quiet for more than `CLI_POOL_HEARTBEAT_MS` (default 3 min), the bridge keeps emitting a "still running" heartbeat instead of declaring failure; only when the turn's total duration exceeds `CLI_POOL_HARD_LIMIT_MS` (default 60 min) does it report a hard timeout — and even then it deliberately leaves the worker running, so its output keeps landing in the session transcript and your next message forks from that same session and inherits everything written in the meantime. Normal completion and the Stop button still stop the worker immediately.
 
-The backend name stays `claude` in both modes, so all orchestration (`backendName === "claude"` checks for approval / labels / A2A / cron) is unchanged. Switching engines is a per-process environment variable; rolling back is removing it.
+The backend name stays `claude` in all four modes, so all orchestration (`backendName === "claude"` checks for approval / labels / A2A / cron) is unchanged. Switching engines is a per-process environment variable; rolling back is removing it.
 
-> The pool engine relies on the official `claude` Agent View infrastructure: the per-user supervisor / spare-process warmup, the local `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` transcript files, and the subscription-usage billing that Anthropic [documents for background sessions](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-view#limitations). It does not install plugins, does not change credentials, and does not bypass any quota — each background session counts toward your Claude subscription usage just like an interactive session you opened yourself.
+> The pool engine invokes documented Claude CLI commands, but reply discovery and completion detection also depend on **observed local implementation contracts**: the `backgrounded · <short-id>` stdout line, `~/.claude/daemon/roster.json`, `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`, user/assistant record shapes, and either visible-text `end_turn` or `system.turn_duration`. These are not a stable public API. A Claude Code upgrade can therefore break the bridge even when `claude --bg` itself still exists.
 
 > An earlier interactive channel-plugin engine (`CLAUDE_CHANNEL_ENGINE=1`) used a local Model Context Protocol server modeled on Claude Code's built-in fakechat channel. It was removed in May 2026 in favor of the Agent View based pool engine; see git history before May 2026 for the channel-plugin engine implementation.
+
+### Claude Code compatibility boundary
+
+| Engine | Documented surface used | Observed / internal contract also used | Upgrade posture |
+|---|---|---|---|
+| SDK | Published Agent SDK event stream | Local transcripts are consulted for session discovery and resume-noise repair | SDK version pin and regression tests |
+| print | `--print`, `--resume`, `--output-format stream-json`, `--settings` | Exact stream-json message/result shapes and local persisted sessions | Synthetic event/result fixtures; no direct roster/socket contract |
+| pool | `--bg`, `--resume`, `claude stop`, `--settings` | Background stdout short ID, daemon roster schema, transcript path/records, two turn-end forms | Synthetic roster/transcript fixtures plus optional live startup self-check |
+| reply | The same background CLI commands | Everything in pool, plus `control.sock`, a non-empty `control.key` file, and the daemon `op:reply` protocol | Experimental; expect breakage when daemon internals change |
+
+The last **static** compatibility check in this repository was against Claude Code **2.1.211 on 2026-07-17**. That means the required CLI help surfaces were present and the synthetic contract fixtures matched the parser; it is not a promise that all future Claude Code versions work.
+
+`/doctor` performs a non-invasive structural check for the selected engine. It checks required flags, roster shape, transcript-directory presence, and—only for reply mode—whether `control.key` is a non-empty regular file; it never reads or prints the key. For enabled CLI engines, the delayed startup self-check is the live end-to-end check (`spawn → roster/stream → transcript/result → stop`). It consumes a small Claude turn and can be disabled with `POOL_SELF_CHECK=0`.
 
 ## Quick start
 
@@ -141,6 +164,7 @@ The inter-bot envelope protocol is specified in [docs/a2a-tg-v1.md](docs/a2a-tg-
 
 ```bash
 bun test
+bun run check:claude-contract
 ```
 
 ## Ecosystem

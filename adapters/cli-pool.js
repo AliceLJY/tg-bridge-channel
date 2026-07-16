@@ -27,6 +27,11 @@ import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { findSessionFile } from "./claude-sessions.js";
+import {
+  extractUserEchoText,
+  isHardTurnEnd,
+  isSoftTurnEnd,
+} from "./claude-local-contract.js";
 
 // ============ 常量 ============
 const ROSTER_PATH = join(homedir(), ".claude/daemon/roster.json");
@@ -42,7 +47,6 @@ const BLOCK_ASK_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "sc
 // 安全网(万一仍调了也拦下、让它 recover、不挂死)。
 // export:--print 引擎(cli-print-adapter.js)复用同一段系统提示,非交互防护单一真相源。
 export const BRIDGE_SYSTEM_NOTE = "你运行在非交互的 Telegram 自动化环境:没有人能在终端点选,调用 AskUserQuestion 会让会话挂起直到超时。请不要调用 AskUserQuestion;遇到本来需要用户选择的地方,自行按合理默认做出决定并继续完成任务(写作类任务的风格/标题/结构等通常已在 skill 中预设,按既定流程推进即可),必要时用一两句话说明你替用户做了哪些假设。另外:如果你看到一条孤立的「Continue from where you left off.」(或类似空泛的续接提示)、而此刻并没有真正的新用户消息需要处理,那是系统 resume 时自动注入的合成消息、不是用户指令——这种情况不要重新回答或复述上一个问题,简短示意在等待即可(甚至可以不输出);等真正的用户消息到了,再针对那条消息回应,不要把它和这条合成续接提示混在一起。 另外关于运行方式:你和用户是同步一问一答,本轮(turn)结束后你不会再被唤醒,没有「稍后主动给用户发消息」的能力。所以:① 不要承诺「你先忙别的/完事我喊你/弄好了通知你」这类话,你做不到异步通知;② 配图、上传、排版、进草稿箱这类多步长任务,要在当前这一轮里一口气从头做到尾,包括同步等外部命令(如 codex 画图)跑完——不要用 &/nohup 把它丢到后台再结束本轮,后台跑完也没人接力、用户收不到结果;③ 一轮里可以持续工作很久(上限约 60 分钟)、期间用户会看到进度心跳、不会把你当卡死,所以放心把整件事做完再收尾;④ 如果确实很耗时,就直说「我现在一口气把图跑完、上传、排版、进草稿箱,大概几分钟,完成后一次性发你」,然后真的接着做——本轮做完的最终回复就是用户能收到的通知。";
-const TURN_END_SUBTYPE = "turn_duration";
 
 // 构造 --settings inline JSON:注入 PreToolUse hook,不落地文件、不碰用户 settings.json。
 //   - AskUserQuestion 拦截:无条件(bridge 永远非交互,见 BLOCK_ASK_SCRIPT)。
@@ -124,7 +128,7 @@ export function readLastTurnState(jsonlPath) {
       if (!line) continue;
       let d;
       try { d = JSON.parse(line); } catch { continue; }
-      if (d.type === "system" && d.subtype === TURN_END_SUBTYPE) {
+      if (isHardTurnEnd(d) || isSoftTurnEnd(d)) {
         return { exists: true, complete: true, mtimeMs };
       }
       if (d.type === "user") {
@@ -143,21 +147,6 @@ export function readLastTurnState(jsonlPath) {
 
 // 上一轮被切断时注入的系统警示:不阻止继续,但让模型先验证、不脑补。
 export const INTERRUPTED_TURN_NOTE = "注意:本会话上一轮处理因等待超时被切断,切断点之后的工具调用结果可能缺失或不完整。不要假设上一轮中未明确确认完成的操作(如发布、生图、文件写入)已经成功——先用命令实际核验相关状态(文件是否存在、记录是否写入),再决定下一步。如果发现状态与上下文记忆不一致,以实际核验结果为准,并向用户如实说明。";
-
-// 从 user 行的 message.content 提取"可作 echo 的文本":
-//   - string → 原样(终端直发的 prompt)
-//   - array → 取第一个 text block 的 text(2026-06-13 codex 复核实据:fork --resume 续接时,
-//     post-spawn 的 user echo 常是数组形态,如 [{type:"text",text:"Continue from where you left off."}];
-//     旧逻辑只认 string → text=null → userEchoSeen 永不置位 → 后续 assistant/turn_duration 全被吞 = 卡死不回传)
-//   - tool_result 数组 / 无 text block → null(绝不把工具结果当 echo,保持归属语义)
-function extractUserEchoText(content) {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    const tb = content.find(b => b?.type === "text" && typeof b.text === "string");
-    return tb ? tb.text : null;
-  }
-  return null;
-}
 
 // ============ jsonl tail reader(原样保留)============
 // 用 byte offset 增量读 jsonl,yield 结构化事件。
@@ -255,14 +244,14 @@ export class JsonlTailReader {
           // (也 end_turn)。本会话实测 19/19 thinking-only end_turn 后面都紧跟 text 行——若对 thinking-only
           // 也 return,会在正文【之前】截断 = 重新制造"无输出"。故 thinking-only end_turn 不收尾、继续 tail;
           // turn_duration 仍是另一条收尾路径(见下),两者先到先得。
-          if (sawText && d.message?.stop_reason === "end_turn") {
+          if (sawText && isSoftTurnEnd(d)) {
             yield { type: "turn_end", durationMs: Date.now() - turnStart, soft: true };
             return;
           }
-        } else if (t === "system" && d.subtype === TURN_END_SUBTYPE && userEchoSeen) {
+        } else if (isHardTurnEnd(d) && userEchoSeen) {
           yield { type: "turn_end", durationMs: d.durationMs };
           return;
-        } else if (t === "system" && d.subtype === TURN_END_SUBTYPE && spawnStartedAt && !userEchoSeen) {
+        } else if (isHardTurnEnd(d) && spawnStartedAt && !userEchoSeen) {
           // canary(2026-06-13,勿删):本轮(post-spawn)收尾信号已到,但归属从未开闸(echo 没被识别)——
           // 这正是"卡死不回传"的指纹。echo 提取已兼容 string/array(见 extractUserEchoText),正常不该到这;
           // 若日后又冒出新的 echo 形态,这条 warn 会在卡死前把现场打到日志,便于一眼定位、对症扩 extractUserEchoText。

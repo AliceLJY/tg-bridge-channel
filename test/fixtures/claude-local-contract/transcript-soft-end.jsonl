@@ -1,0 +1,3 @@
+{"type":"user","message":{"content":[{"type":"text","text":"fixture prompt"}]},"timestamp":"2026-07-17T10:00:00.000Z"}
+{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"synthetic fixture reasoning"}],"stop_reason":"end_turn"},"timestamp":"2026-07-17T10:00:01.000Z"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-fixture","name":"Write","input":{"file_path":"/tmp/fixture-output.txt"}},{"type":"text","text":"fixture answer"}],"stop_reason":"end_turn"},"timestamp":"2026-07-17T10:00:02.000Z"}

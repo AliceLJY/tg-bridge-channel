@@ -1,0 +1,16 @@
+{
+  "workers": {
+    "a1b2c3d4": {
+      "sessionId": "00000000-0000-4000-8000-000000000001",
+      "cwd": "/tmp/fixture-project",
+      "rendezvousSock": "/tmp/claude-fixture/rv/a1b2c3d4.sock",
+      "ptySock": "/tmp/claude-fixture/pty/a1b2c3d4.sock",
+      "dispatch": {
+        "sessionId": "00000000-0000-4000-8000-000000000001",
+        "launch": {
+          "args": ["--bg", "--name", "fixture-worker"]
+        }
+      }
+    }
+  }
+}

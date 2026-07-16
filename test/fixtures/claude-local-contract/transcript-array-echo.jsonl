@@ -1,0 +1,5 @@
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"fixture-tool","content":"synthetic result"}]},"timestamp":"2026-07-17T10:00:00.000Z"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"must stay gated"}]},"timestamp":"2026-07-17T10:00:01.000Z"}
+{"type":"user","message":{"content":[{"type":"text","text":"fixture prompt"}]},"timestamp":"2026-07-17T10:00:02.000Z"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"fixture answer"}]},"timestamp":"2026-07-17T10:00:03.000Z"}
+{"type":"system","subtype":"turn_duration","durationMs":42,"timestamp":"2026-07-17T10:00:04.000Z"}

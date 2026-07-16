@@ -10,7 +10,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -25,3 +25,9 @@ jobs:
 
       - name: Run tests
         run: bun test
+
+      - name: Check Claude local contract
+        run: bun run check:claude-contract
+
+      - name: Check package contents
+        run: bun run package:check

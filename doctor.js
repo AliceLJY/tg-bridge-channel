@@ -1,12 +1,17 @@
 // 健康检查模块（借鉴 cc-connect DoctorChecker）
 // /doctor 命令：全面诊断 bridge 运行状态
 
-import { existsSync } from "fs";
+import { existsSync, readFileSync, statSync } from "fs";
 import { execFileSync } from "child_process";
 import { join } from "path";
 import { homedir } from "os";
 import { getSharedContextStatus } from "./shared-context.js";
 import { checkRedisHealth } from "./shared-context/redis-health.js";
+import {
+  CLAUDE_LOCAL_CONTRACT_REVISION,
+  inspectClaudeLocalContract,
+  selectClaudeLocalContractMode,
+} from "./adapters/claude-local-contract.js";
 
 // execFileSync 参数数组形式：CLAUDE_CLI_PATH 来自 env，不经 shell 插值，防注入
 function safeExecFile(file, args, cwd) {
@@ -33,6 +38,60 @@ function buildVersionLines() {
   return lines;
 }
 
+function readJsonSnapshot(path) {
+  if (!existsSync(path)) return { exists: false, parseOk: false, value: null };
+  try {
+    return { exists: true, parseOk: true, value: JSON.parse(readFileSync(path, "utf8")) };
+  } catch {
+    return { exists: true, parseOk: false, value: null };
+  }
+}
+
+function isNonEmptyRegularFile(path) {
+  try {
+    const stat = statSync(path);
+    return stat.isFile() && stat.size > 0;
+  } catch {
+    return false;
+  }
+}
+
+export function buildClaudeContractLines({
+  env = process.env,
+  cliHelp,
+  stopHelp,
+  rosterSnapshot,
+  projectsDirExists,
+  controlKeyFile,
+} = {}) {
+  const mode = selectClaudeLocalContractMode(env);
+  if (mode === "sdk") {
+    return [`⏭️ Claude local contract [sdk/${CLAUDE_LOCAL_CONTRACT_REVISION}]: SDK execution path; daemon roster transport not active`];
+  }
+
+  const claudeCli = env.CLAUDE_CLI_PATH || join(homedir(), ".local/bin/claude");
+  const effectiveCliHelp = cliHelp ?? safeExecFile(claudeCli, ["--help"]);
+  const effectiveStopHelp = stopHelp ?? safeExecFile(claudeCli, ["stop", "--help"]);
+  const effectiveRoster = rosterSnapshot ?? readJsonSnapshot(join(homedir(), ".claude/daemon/roster.json"));
+  const effectiveProjectsDir = projectsDirExists ?? existsSync(join(homedir(), ".claude/projects"));
+  // Reply mode needs the control-key file, but /doctor checks only regular-file
+  // existence and non-emptiness. It never reads or prints the credential.
+  const effectiveControlKey = controlKeyFile ?? isNonEmptyRegularFile(join(homedir(), ".claude/daemon/control.key"));
+  const result = inspectClaudeLocalContract({
+    mode,
+    cliHelp: effectiveCliHelp,
+    stopHelp: effectiveStopHelp,
+    rosterExists: effectiveRoster.exists,
+    rosterParseOk: effectiveRoster.parseOk,
+    roster: effectiveRoster.value,
+    projectsDirExists: effectiveProjectsDir,
+    controlKeyFile: effectiveControlKey,
+  });
+  const marker = result.ok ? "✅" : "❌";
+  const details = result.ok ? "required CLI and local structures present" : result.problems.join(", ");
+  return [`${marker} Claude local contract [${mode}/${CLAUDE_LOCAL_CONTRACT_REVISION}]: ${details}`];
+}
+
 export async function runHealthCheck(ctx) {
   const {
     adapters = {},
@@ -52,6 +111,7 @@ export async function runHealthCheck(ctx) {
 
   // 0. 进程与版本指纹（部署滞后检测）
   lines.push(...buildVersionLines());
+  lines.push(...buildClaudeContractLines());
 
   // 1. Backend 连通性
   for (const name of activeBackends) {
