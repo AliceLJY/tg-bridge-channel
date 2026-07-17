@@ -58,89 +58,96 @@ export function createLatePatrolManager({
       flushHint: false,     // 读到 turn 收尾标记 → 立即可发，不等稳定窗
       bursts: 0,
       stopped: false,
-      polling: false,       // poll 重入护栏（interval 与 sweep 并发）
+      chain: Promise.resolve(),  // poll 串行链:interval 与 sweep 排队执行,绝无并发读/并发 flush(codex P1)
       timer: null,
     };
     patrols.set(chatId, st);
-    st.timer = setInterval(() => {
-      poll(chatId, st).catch(e => logger.warn?.(`[late-patrol] poll err chatId=${chatId}: ${e.message}`));
-    }, intervalMs);
+    st.timer = setInterval(() => { schedulePoll(chatId, st); }, intervalMs);
     st.timer.unref?.();  // 巡逻定时器不该拖住进程退出(shutdown stopAll 之外的双保险)
     logger.log?.(`[late-patrol] armed chatId=${chatId} sid=${String(sessionId).slice(0, 8)} offset=${reader.offset}`);
   }
 
-  async function poll(chatId, st, { force = false } = {}) {
-    if (st.stopped || st.polling) return;
-    st.polling = true;
-    try {
-      if (Date.now() - st.startedAt > maxAgeMs) { await flush(chatId, st, { force: true }); stop(chatId); return; }
-      st.reader.maybeRelocate?.(); // 内部有冷却；worktree 迁移场景跟着文件走
-      const lines = await st.reader._readNewLines();
-      for (const line of lines) {
-        let d;
-        try { d = JSON.parse(line); } catch { continue; }
-        const lineMs = d.timestamp ? Date.parse(d.timestamp) : 0;
-        if (d.type === "user") {
-          const humanText = extractUserEchoText(d.message?.content);
-          if (humanText !== null && lineMs > st.turnEndedAt) {
-            // 真人输入进了这个会话（手机 RC / 别的通道接管）→ 把已有 pending 发完，退场不再跟
-            logger.log?.(`[late-patrol] human input seen, standing down chatId=${chatId}`);
-            await flush(chatId, st, { force: true });
-            stop(chatId);
-            return;
-          }
-          continue; // tool_result / bg 通知回填：正是接力形态，继续巡逻
+  // 所有 poll(interval 触发 / sweep 触发)都排进同一条 promise 链——sweepAndStop await 链尾即等到
+  // "进行中的 poll 收尾 + 自己的 final sweep 完成",不再有"sweep 撞上进行中 poll 直接返回"的竞态。
+  function schedulePoll(chatId, st, opts = {}) {
+    st.chain = st.chain
+      .then(() => doPoll(chatId, st, opts))
+      .catch(e => logger.warn?.(`[late-patrol] poll err chatId=${chatId}: ${e.message}`));
+    return st.chain;
+  }
+
+  async function doPoll(chatId, st, { force = false } = {}) {
+    if (st.stopped) return;
+    if (Date.now() - st.startedAt > maxAgeMs) { await flush(chatId, st, { force: true }); stop(chatId); return; }
+    st.reader.maybeRelocate?.(); // 内部有冷却；worktree 迁移场景跟着文件走
+    const lines = await st.reader._readNewLines();
+    for (const line of lines) {
+      let d;
+      try { d = JSON.parse(line); } catch { continue; }
+      const lineMs = d.timestamp ? Date.parse(d.timestamp) : 0;
+      if (d.type === "user") {
+        const humanText = extractUserEchoText(d.message?.content);
+        if (humanText !== null && lineMs > st.turnEndedAt) {
+          // 真人输入进了这个会话（手机 RC / 别的通道接管）→ 把已有 pending 发完，退场不再跟
+          logger.log?.(`[late-patrol] human input seen, standing down chatId=${chatId}`);
+          await flush(chatId, st, { force: true });
+          stop(chatId);
+          return;
         }
-        if (d.type === "assistant") {
-          if (lineMs && lineMs <= st.turnEndedAt) continue; // turn 内已发过的行（relocate 归零重放）跳过
-          const c = d.message?.content;
-          if (Array.isArray(c)) {
-            for (const block of c) {
-              if (block.type !== "text") continue;
-              const clean = stripMalformedToolCall(block.text || "");
-              if (clean) { st.pendingText += clean; st.lastNewTextAt = Date.now(); }
-            }
-          }
-          if (isSoftTurnEnd(d) && st.pendingText.trim()) st.flushHint = true;
-          continue;
-        }
-        if (isHardTurnEnd(d) && st.pendingText.trim()) st.flushHint = true;
+        continue; // tool_result / bg 通知回填：正是接力形态，继续巡逻
       }
-      const stable = st.pendingText.trim()
-        && (st.flushHint || force || (st.lastNewTextAt && Date.now() - st.lastNewTextAt >= stabilizeMs));
-      if (stable) await flush(chatId, st, { force });
-    } finally {
-      st.polling = false;
+      if (d.type === "assistant") {
+        if (lineMs && lineMs <= st.turnEndedAt) continue; // turn 内已发过的行（relocate 归零重放）跳过
+        const c = d.message?.content;
+        if (Array.isArray(c)) {
+          for (const block of c) {
+            if (block.type !== "text") continue;
+            const clean = stripMalformedToolCall(block.text || "");
+            if (clean) { st.pendingText += clean; st.lastNewTextAt = Date.now(); }
+          }
+        }
+        if (isSoftTurnEnd(d) && st.pendingText.trim()) st.flushHint = true;
+        continue;
+      }
+      if (isHardTurnEnd(d) && st.pendingText.trim()) st.flushHint = true;
     }
+    const stable = st.pendingText.trim()
+      && (st.flushHint || force || (st.lastNewTextAt && Date.now() - st.lastNewTextAt >= stabilizeMs));
+    if (stable) await flush(chatId, st, { force });
   }
 
   async function flush(chatId, st, { force = false } = {}) {
     const text = st.pendingText.trim();
     if (!text) return;
     if (st.bursts >= maxBursts) { stop(chatId); return; }
-    st.bursts++;
-    st.pendingText = "";
-    st.flushHint = false;
-    const capped = st.bursts >= maxBursts;
+    const nextBurst = st.bursts + 1;
+    const capped = nextBurst >= maxBursts;
     const body = prefix + text + (capped && !force ? capNotice : "");
+    // 发送成功才清 pending / 计数(codex P2):瞬时网络失败保留全部状态,置 flushHint 让下次 poll
+    // 立刻重试——巡逻器存在的意义就是找回丢失的报告,自己不能再弄丢一次。
     try {
       await st.send(body);
-      logger.log?.(`[late-patrol] burst ${st.bursts}/${maxBursts} sent chatId=${chatId} (${text.length} chars)`);
     } catch (e) {
-      logger.warn?.(`[late-patrol] send failed chatId=${chatId}: ${e.message}`);
+      logger.warn?.(`[late-patrol] send failed chatId=${chatId} (keeping pending for retry): ${e.message}`);
+      st.flushHint = true;
+      return;
     }
+    st.bursts = nextBurst;
+    st.pendingText = "";
+    st.flushHint = false;
+    logger.log?.(`[late-patrol] burst ${st.bursts}/${maxBursts} sent chatId=${chatId} (${text.length} chars)`);
     if (capped && !force) stop(chatId);
   }
 
-  // 新消息进入处理流程前调用：最后扫一次、把 pending 立刻发完、退场。
-  // 时序保证：发生在新轮 op:reply 之前 → 巡逻器读到的都是旧 turn 之后、新 turn 之前的内容，零重叠。
+  // 新消息进入处理流程前调用：等进行中的 poll 收尾 → 最后扫一次并把 pending 立刻发完 → 退场。
+  // 时序保证：整个过程发生在新轮 op:reply 之前 → 巡逻器读到的都是旧 turn 之后、新 turn 之前的内容，
+  // 零重叠、零重发（final sweep 排在串行链尾，绝不与进行中的 poll 并发）。
   async function sweepAndStop(chatId) {
     const st = patrols.get(chatId);
     if (!st) return;
+    if (st.timer) { clearInterval(st.timer); st.timer = null; }  // 先断 interval,防 sweep 后又排进新 poll
     try {
-      await poll(chatId, st, { force: true });
-    } catch (e) {
-      logger.warn?.(`[late-patrol] final sweep err chatId=${chatId}: ${e.message}`);
+      await schedulePoll(chatId, st, { force: true });
     } finally {
       stop(chatId);
     }

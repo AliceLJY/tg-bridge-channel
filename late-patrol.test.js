@@ -148,6 +148,53 @@ describe("late-patrol 迟到产出巡逻", () => {
     expect(sent[0]).toContain("残余");
   });
 
+  test("send 瞬时失败 → pending 保留 + 下次 poll 重试成功,报告不丢(codex P2)", async () => {
+    const sent = [];
+    let failFirst = true;
+    const reader = makeFakeReader([
+      [J({ type: "assistant", timestamp: iso(5000), message: { content: [{ type: "text", text: "差点被弄丢的报告" }] } }),
+       J({ type: "system", subtype: "turn_duration", durationMs: 1, timestamp: iso(5001) })],
+    ]);
+    const mgr = createLatePatrolManager({
+      intervalMs: 10, stabilizeMs: 100000, maxAgeMs: 60000, maxBursts: 5,
+      makeReader: () => reader,
+      logger: { log: () => {}, warn: () => {} },
+    });
+    const send = async (text) => {
+      if (failFirst) { failFirst = false; throw new Error("ETELEGRAM 502"); }
+      sent.push(text);
+    };
+    mgr.start(1001, HANDLE, send);
+    await sleep(80);
+    mgr.stop(1001);
+    expect(sent).toHaveLength(1);                 // 第二次 poll 重试成功
+    expect(sent[0]).toContain("差点被弄丢的报告");
+  });
+
+  test("sweepAndStop 撞上进行中的 poll → 排队等待,文本恰好发一次不丢不重(codex P1 竞态)", async () => {
+    const sent = [];
+    let resolveSlowSend;
+    const slowSendGate = new Promise(r => { resolveSlowSend = r; });
+    const reader = makeFakeReader([
+      [J({ type: "assistant", timestamp: iso(5000), message: { content: [{ type: "text", text: "慢发送期间的报告" }] } }),
+       J({ type: "system", subtype: "turn_duration", durationMs: 1, timestamp: iso(5001) })],
+    ]);
+    const mgr = createLatePatrolManager({
+      intervalMs: 10, stabilizeMs: 100000, maxAgeMs: 60000, maxBursts: 5,
+      makeReader: () => reader,
+      logger: { log: () => {}, warn: () => {} },
+    });
+    const send = async (text) => { sent.push(text); await slowSendGate; };  // 第一次发送挂起
+    mgr.start(1001, HANDLE, send);
+    await sleep(30);                       // interval poll 进入 flush,send 挂在 gate 上
+    const sweep = mgr.sweepAndStop(1001);  // 此刻 sweep 必须排队,不得跳过或并发
+    await sleep(20);
+    resolveSlowSend();                     // 放行慢发送
+    await sweep;
+    expect(sent).toHaveLength(1);          // 恰好一次:进行中的 flush 完成,sweep 无残余可发
+    expect(mgr.size()).toBe(0);
+  });
+
   test("同 chat 重复 start → 新 handle 顶掉旧巡逻(单例)", async () => {
     const { mgr, send } = makeManager({ batches: [] });
     mgr.start(1001, HANDLE, send);

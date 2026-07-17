@@ -21,6 +21,7 @@
     "flush-gate.js",
     "rate-limiter.js",
     "idle-monitor.js",
+    "late-patrol.js",
     "dir-manager.js",
     "doctor.js",
     "markdown-to-tg.js",
