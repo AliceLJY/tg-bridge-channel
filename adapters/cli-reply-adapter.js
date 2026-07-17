@@ -76,6 +76,30 @@ async function spawnWorker(config, prompt, { resumeSessionId, model, effort, cwd
   });
 }
 
+// ECHO_TIMEOUT 自愈(2026-07-17):实测一大根因是 Claude CLI 自动升级 → daemon 检测到 binary changed
+// self-restart 换代 → 接管后 respawn(attempt≥2)的 worker 永久卡死在 state:"resuming"(非交互态)——
+// op:reply 回执 ok 但消息进黑洞,"提示用户重发"彻底失效(worker 还卡着,每条必 ECHO_TIMEOUT 死循环,
+// 案例 RecallNest e8e136f7)。此函数判定并清除卡死 worker:
+//   - state==="resuming" → 官方 op:kill(绝不 kill -9 进程,daemon 会当意外死亡再 respawn 一个卡死的回来),
+//     等 roster 摘除后返回 true → 调用方本轮直接递归重投(kill 后 findLiveWorkerBySession 落空,
+//     自然走 --resume 复活路径,历史保留、用户无感)。
+//   - job 已消失(90s 窗口内 worker 死了)→ 不用 kill,直接 true 重投走复活。
+//   - 其他 state(可能真在跑活)/ daemon 不可达 → false,宁漏勿误杀,回落原提示文案。
+// deps 可注入(测试用);等待参数放宽给测试压短。
+export async function selfHealStuckWorker(short, { list, kill, rosterHas, waitMs = 250, maxWaitRounds = 20 }) {
+  try {
+    const l = await list();
+    const job = l?.jobs?.find(j => j.short === short);
+    if (job && job.state !== "resuming") return false;
+    if (job) await kill(short);
+    for (let i = 0; i < maxWaitRounds; i++) {
+      if (!rosterHas(short)) return true;
+      await new Promise(r => setTimeout(r, waitMs));
+    }
+    return true;  // kill 已发出但 roster 迟迟不摘:仍重投——最坏再 ECHO_TIMEOUT 一次,由 __echoRetried 兜住不循环
+  } catch { return false; }
+}
+
 // pool 风格事件映射(与 cli-pool-adapter 一致):累积 text(turn_end 用它兜底回传 —— bridge 用 result.text
 // 发 TG,不累积会"无输出");AskUserQuestion 静默跳过(hook 已拦、模型自主续写);idle_heartbeat→heartbeat。
 export function* mapEvents(ev, state) {
@@ -136,7 +160,9 @@ export function createAdapter(config = {}) {
       ];
     },
 
-    async *streamQuery(prompt, sessionId, abortSignal, overrides = {}) {
+    // 具名函数表达式:函数名 streamQuery 在体内可自引用 —— ECHO_TIMEOUT 自愈需要递归重投本轮,
+    // 对象方法没有稳定自引用(this 依赖解构方式)。
+    streamQuery: async function* streamQuery(prompt, sessionId, abortSignal, overrides = {}) {
       const { model, effort, cwd, systemAppend } = overrides;
       const turnCwd = cwd || defaultCwd;
       const heartbeatMs = Number(overrides.heartbeatMs) || Number(process.env.CLI_POOL_HEARTBEAT_MS) || 180000;
@@ -227,6 +253,22 @@ export function createAdapter(config = {}) {
         // success:true(codex P3):这是预期内的恢复引导,不是 backend 故障。若用 false,bridge sendFinalResult 会
         // 套成"CC(rc) 出错:…完整日志见后台"= 把好心提示显示成报错。用 true 让这句纯文本提示原样发给用户。
         if ((e.message || "").startsWith("ECHO_TIMEOUT")) {
+          // 自愈优先(2026-07-17,案例 RecallNest e8e136f7):worker 卡死 state:"resuming"(CLI 升级 daemon 换代
+          // respawn 特有)时,"提示重发"是死循环——先查实并清掉卡死 worker,本轮直接递归重投(kill 后
+          // findLiveWorkerBySession 落空 → 走 --resume 复活,历史保留、用户无感)。只试一次(__echoRetried);
+          // worker 状态正常(可能真在跑)或 daemon 不可达 → 不动刀,回落原提示。
+          if (!overrides.__echoRetried && activeShort) {
+            const healed = await selfHealStuckWorker(activeShort, {
+              list: () => daemon.list(),
+              kill: s => daemon.kill(s),
+              rosterHas: s => !!readRoster()?.workers?.[s],
+            });
+            if (healed) {
+              console.warn(`[cli-reply-adapter] self-heal: worker ${activeShort} stuck(resuming)/gone after ECHO_TIMEOUT — cleared, re-driving turn via revive`);
+              yield* streamQuery(prompt, sessionId, abortSignal, { ...overrides, __echoRetried: true });
+              return;
+            }
+          }
           yield { type: "result", success: true, text: "这条好像没递到我这边(偶发投递问题),我还在、会话没坏,把刚才那句重发一遍就行～" };
           return;
         }
