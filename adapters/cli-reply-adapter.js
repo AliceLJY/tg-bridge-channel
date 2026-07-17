@@ -220,6 +220,10 @@ export function createAdapter(config = {}) {
             // 待查 daemon-client.js;adapter 层可做的缓解是"本轮启动看门狗"(echo 超时即快速失败兜底,而非傻等 1h)。
             for await (const ev of reader.readUntilTurnEnd({ expectUserText: prompt, spawnStartedAt: replyStartedAt, echoGraceMs, heartbeatMs, hardLimitMs, abortSignal }))
               for (const m of mapEvents(ev, state)) yield m;
+            // 迟到产出巡逻交接(2026-07-17,case 8d6eb755):turn 正常收尾后,CC 的 bg 接力任务可能稍后往
+            // 同一 jsonl 续写最终报告——把"从哪个文件哪个偏移接着盯"交给 bridge 侧巡逻器补发。
+            // 只在正常收尾路径 yield(catch/abort 不发:worker 状态未知,别乱盯)。
+            yield { type: "late_patrol_handle", sessionId: worker.sessionId, jsonlPath: reader.path, offset: reader.offset, turnEndedAt: Date.now() };
             return;
           }
           if (ack.code !== "ENOJOB") throw new Error(`op:reply failed: ${ack.code || ""} ${ack.error || ""}`.trim());
@@ -265,6 +269,8 @@ export function createAdapter(config = {}) {
         const reader = new JsonlTailReader(turn.jsonlPath, { sessionId: turn.sessionId });  // sessionId → 静默重定位(worktree 迁移)
         for await (const ev of reader.readUntilTurnEnd({ expectUserText: prompt, spawnStartedAt: turn.spawnStartedAt, heartbeatMs, hardLimitMs, abortSignal }))
           for (const m of mapEvents(ev, state)) yield m;
+        // 同上:新建/复活轮正常收尾后交接迟到产出巡逻
+        yield { type: "late_patrol_handle", sessionId: turn.sessionId, jsonlPath: reader.path, offset: reader.offset, turnEndedAt: Date.now() };
       } catch (e) {
         if (abortSignal?.aborted) {
           // 用户 Stop:杀掉本轮 worker,别让它在后台继续 bypassPermissions 跑工具(codex P1)。

@@ -58,6 +58,7 @@ import { markdownToTelegramHTML, hasMarkdownFormatting } from "./markdown-to-tg.
 import { extractFilePathsFromText, extractProgressBroadcasts, sanitizeBackendError, sendCapturedOutputs, sendFinalResult, stripProgressBroadcasts } from "./output-relay.js";
 import { createTaskFinalizer, finishTurnProgress, saveCapturedSession } from "./turn-state.js";
 import { probeSessionFile } from "./adapters/claude-sessions.js";
+import { createLatePatrolManager } from "./late-patrol.js";
 import { registerCommands } from "./commands/index.js";
 import { startEntrypointPatcher } from "./scripts/patch-entrypoint.js";
 import {
@@ -410,6 +411,12 @@ const idleMonitor = createIdleMonitor({
     } catch {}
   },
 });
+
+// 迟到产出巡逻(2026-07-17,case 8d6eb755):turn 收尾后 CC 的 bg 接力任务往同一 jsonl 续写的最终报告,
+// 由巡逻器低频盯梢补发到 TG("CC 以为发了、用户没收到"的另一半)。env: LATE_PATROL_* 可调,
+// LATE_PATROL_ENABLED=0 一键关闭(observe-before-enforce 的关闭路径)。
+const latePatrol = createLatePatrolManager();
+const LATE_PATROL_ENABLED = process.env.LATE_PATROL_ENABLED !== "0";
 
 // Cron: 延迟初始化（需要 bot 实例，在 bot 创建后完成）
 let cronManager = null;
@@ -1296,6 +1303,15 @@ async function processPrompt(ctx, prompt) {
           continue;  // 不传给下游处理，仅 bridge 内部用
         }
 
+        // 迟到产出巡逻交接:reply 引擎 turn 正常收尾后给出"从哪个文件哪个偏移接着盯"。
+        // 只对 claude 后端 + 非 discuss(群聊补报会串台)启用;其他引擎不发这个事件,天然兼容。
+        if (event.type === "late_patrol_handle") {
+          if (LATE_PATROL_ENABLED && backendName === "claude" && !activeDiscussMode) {
+            latePatrol.start(chatId, event, (text) => sendLong(ctx, text));
+          }
+          continue;  // 仅 bridge 内部用,不进 progress/result 流
+        }
+
         // AskUserQuestion: 发送完整问题 + inline 按钮
         if (event.type === "question") {
           const header = event.header ? `*${event.header}*\n\n` : "";
@@ -1579,6 +1595,10 @@ async function processPrompt(ctx, prompt) {
 // submitAndWait: 外层入口，通过 FlushGate 合并连续消息
 async function submitAndWait(ctx, prompt) {
   const chatId = ctx.chat.id;
+
+  // 迟到产出巡逻收尾:新一轮进入处理流程前,把上一 turn 之后的 pending 补报立刻发完并停巡逻。
+  // 必须发生在新轮 op:reply 之前 —— 保证巡逻器读到的都是旧 turn 的迟到内容,与新轮零重叠、零重发。
+  await latePatrol.sweepAndStop(chatId);
 
   // 闲置轮转：用户长时间没说话，自动开新 session
   if (idleMonitor.shouldAutoReset(chatId)) {
@@ -1935,6 +1955,9 @@ process.on("uncaughtException", (err) => {
 // 必须在 await startBotPolling() 之前注册：bot.start() 阻塞到停机，写在它后面的代码运行期间不会执行
 async function shutdown(signal) {
   console.log(`[bridge] ${signal} received, shutting down...`);
+
+  // 0. 停掉迟到产出巡逻(定时器不清会拖住进程退出)
+  latePatrol.stopAll();
 
   // 1. 停止接收新消息
   await bot.stop().catch(() => {});
