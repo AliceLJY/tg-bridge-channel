@@ -36,9 +36,13 @@ function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+// 拦两类:①真控制字符(含 ESC)②ANSI 转义被吞掉 ESC 后的残渣——特征是以 `[数字m` 结尾【无闭方括号】
+// (如 "opus[1m"、"opus[0;32m")。注意 `model[1m]` 带闭括号是 Claude CLI 合法的 1M 上下文后缀语法
+// (claude-fable-5[1m],07-16 起全 bridge 在用),绝不能拦——2026-07-17 实测:上一版正则带 \]? 把它误伤,
+// 三个 claude bot 重启加载新校验后全部起不来(config 校验拒 → 启动即退,e21aba9 的回归)。
 function hasTerminalFormattingArtifact(value) {
   const text = String(value ?? "");
-  return /[\u0000-\u001F\u007F]/.test(text) || /\[[0-9;]{1,16}m\]?$/.test(text);
+  return /[\u0000-\u001F\u007F]/.test(text) || /\[[0-9;]{1,16}m$/.test(text);
 }
 
 function pushIssue(issues, path, message) {

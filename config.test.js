@@ -101,7 +101,8 @@ describe("config productization", () => {
   test("model fields reject terminal formatting artifacts", () => {
     const config = createDefaultConfig();
     config.backends.claude.enabled = true;
-    config.backends.claude.model = "opus[1m]";
+    // 真残渣:ANSI 转义被吞掉 ESC 后的 `[1m` 结尾【无闭方括号】→ 拒
+    config.backends.claude.model = "opus[1m";
 
     const configIssues = validateConfig(config);
     expect(configIssues.map((issue) => issue.path)).toContain("backends.claude.model");
@@ -116,6 +117,17 @@ describe("config productization", () => {
       CC_PERMISSION_MODE: "default",
     });
     expect(runtimeIssues.map((issue) => issue.path)).toContain("CC_MODEL");
+  });
+
+  test("model 的 [1m] 带闭括号后缀是合法 1M 上下文语法,绝不能当残渣拦(e21aba9 回归护栏)", () => {
+    // 2026-07-17 实测:claude-fable-5[1m] 是全 bridge 在用的正式配置(07-16 对齐全局防缓存碎裂),
+    // 上一版正则 \[[0-9;]{1,16}m\]?$ 的 \]? 把它误伤 → 三个 claude bot 重启后 config 校验拒、启动即退。
+    const config = createDefaultConfig();
+    config.backends.claude.enabled = true;
+    config.backends.claude.model = "claude-fable-5[1m]";
+
+    const issues = validateConfig(config);
+    expect(issues.map((issue) => issue.path)).not.toContain("backends.claude.model");
   });
 
   test("loadRuntimeConfig resolves config paths and summarizeRuntime redacts secrets", () => {
