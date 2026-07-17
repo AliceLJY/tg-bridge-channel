@@ -446,3 +446,122 @@ describe("CliPool.sendAndStream fork 前置检查(2026-06-11 半截快照错乱�
     expect(spawnedOpts[0].systemAppend).toBeUndefined();
   });
 });
+
+// 静默重定位(2026-07-17,case 4fb95516):worker 中途 EnterWorktree/切 cwd → jsonl 迁进别的 projects
+// 子目录,旧路径不再增长 → bridge 傻等无输出。sessionId 给了才启用;findAll 注入(全量候选,codex review P2:
+// 迁移可能"复制留旧",first-match 永远撞旧文件——收集全部按 mtime 择新,且只在别处副本比当前文件新鲜时才切)。
+describe("JsonlTailReader.maybeRelocate 静默重定位", () => {
+  const J = (o) => JSON.stringify(o);
+  let dir;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "reloc-")); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  test("未传 sessionId → 永不重定位", () => {
+    const reader = new JsonlTailReader(join(dir, "a.jsonl"), { relocateAfterMs: 0 });
+    expect(reader.maybeRelocate()).toBe(false);
+  });
+
+  test("move 迁移(旧文件已不存在)→ 切新路径;新文件不短于已读 offset 时 offset 保留(复制+续写无缝衔接)", () => {
+    const oldPath = join(dir, "old", "s.jsonl");   // 不落盘 = 已被移走
+    const newPath = join(dir, "new", "s.jsonl");
+    const reader = new JsonlTailReader(oldPath, {
+      sessionId: "sid-1",
+      relocateAfterMs: 0,
+      findAll: () => [{ path: newPath, size: 500, mtime: 1000 }],
+    });
+    reader.offset = 300;
+    expect(reader.maybeRelocate()).toBe(true);
+    expect(reader.path).toBe(newPath);
+    expect(reader.offset).toBe(300);
+  });
+
+  test("copy 迁移(旧文件还在但停更,别处副本更新鲜)→ 切到 mtime 最新的副本", () => {
+    const oldPath = join(dir, "s.jsonl");
+    writeFileSync(oldPath, "x\n");               // 旧文件真实存在,mtime=现在
+    const stale = join(dir, "stale.jsonl");
+    const fresh = join(dir, "fresh.jsonl");
+    const reader = new JsonlTailReader(oldPath, {
+      sessionId: "sid-1",
+      relocateAfterMs: 0,
+      findAll: () => [
+        { path: stale, size: 10, mtime: 1000 },                  // 老副本
+        { path: fresh, size: 500, mtime: Date.now() + 60000 },   // 比当前文件新鲜
+      ],
+    });
+    reader.offset = 2;
+    expect(reader.maybeRelocate()).toBe(true);
+    expect(reader.path).toBe(fresh);
+  });
+
+  test("当前文件比所有副本都新鲜(还在长/误报)→ 不切", () => {
+    const oldPath = join(dir, "s.jsonl");
+    writeFileSync(oldPath, "x\n");               // mtime=现在
+    const reader = new JsonlTailReader(oldPath, {
+      sessionId: "sid-1",
+      relocateAfterMs: 0,
+      findAll: () => [{ path: join(dir, "b.jsonl"), size: 999, mtime: 1000 }],  // 很老的副本
+    });
+    expect(reader.maybeRelocate()).toBe(false);
+    expect(reader.path).toBe(oldPath);
+  });
+
+  test("新文件比已读 offset 短(异常轮转)→ offset 归 0 兜底,重放行靠 ts 归属门滤", () => {
+    const reader = new JsonlTailReader(join(dir, "gone.jsonl"), {
+      sessionId: "sid-1",
+      relocateAfterMs: 0,
+      findAll: () => [{ path: join(dir, "b.jsonl"), size: 100, mtime: 1000 }],
+    });
+    reader.offset = 300;
+    expect(reader.maybeRelocate()).toBe(true);
+    expect(reader.offset).toBe(0);
+  });
+
+  test("查无候选/只剩当前路径/查盘抛错 → 不动", () => {
+    const samePath = join(dir, "a.jsonl");
+    const same = new JsonlTailReader(samePath, { sessionId: "s", relocateAfterMs: 0, findAll: () => [{ path: samePath, size: 9, mtime: 99 }] });
+    expect(same.maybeRelocate()).toBe(false);
+    const missing = new JsonlTailReader(samePath, { sessionId: "s", relocateAfterMs: 0, findAll: () => [] });
+    expect(missing.maybeRelocate()).toBe(false);
+    const throwing = new JsonlTailReader(samePath, { sessionId: "s", relocateAfterMs: 0, findAll: () => { throw new Error("EACCES"); } });
+    expect(throwing.maybeRelocate()).toBe(false);
+    expect(throwing.path).toBe(samePath);
+  });
+
+  test("冷却窗口内不重复查盘", () => {
+    let probes = 0;
+    const reader = new JsonlTailReader(join(dir, "a.jsonl"), {
+      sessionId: "sid-1",
+      relocateAfterMs: 60000,
+      findAll: () => { probes++; return []; },
+    });
+    reader.maybeRelocate();
+    reader.maybeRelocate();
+    reader.maybeRelocate();
+    expect(probes).toBe(1);
+  });
+
+  test("readUntilTurnEnd 集成:旧文件静默、会话迁到新文件续写 → turn 从新文件读完不傻等", async () => {
+    const spawnAt = Date.parse("2026-07-17T10:00:00.000Z");
+    const oldPath = join(dir, "s.jsonl");
+    const newPath = join(dir, "moved.jsonl");
+    // 旧文件:本轮 echo 已到,然后 worker 迁走(旧文件从此静默)
+    const prefix = J({ type: "user", message: { content: "进 worktree 干活" }, timestamp: "2026-07-17T10:00:01.000Z" }) + "\n";
+    writeFileSync(oldPath, prefix);
+    // 新文件 = 旧内容前缀 + 续写(text + turn_duration)
+    writeFileSync(newPath, prefix
+      + J({ type: "assistant", message: { content: [{ type: "text", text: "在新家写完了" }] }, timestamp: "2026-07-17T10:00:02.000Z" }) + "\n"
+      + J({ type: "system", subtype: "turn_duration", durationMs: 7, timestamp: "2026-07-17T10:00:03.000Z" }) + "\n");
+    const reader = new JsonlTailReader(oldPath, {
+      sessionId: "sid-moved",
+      relocateAfterMs: 40,
+      findAll: () => [{ path: newPath, size: 999999, mtime: Date.now() + 60000 }],  // 副本比当前新鲜 → 必切
+    });
+    const events = [];
+    for await (const ev of reader.readUntilTurnEnd({ spawnStartedAt: spawnAt, pollMs: 10, heartbeatMs: 5000, hardLimitMs: 3000 })) {
+      events.push(ev);
+    }
+    expect(reader.path).toBe(newPath);
+    expect(events.some(e => e.type === "text" && e.text === "在新家写完了")).toBe(true);
+    expect(events.at(-1).type).toBe("turn_end");
+  });
+});

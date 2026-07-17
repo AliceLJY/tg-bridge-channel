@@ -26,7 +26,7 @@ import { createInterface } from "node:readline";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { findSessionFile } from "./claude-sessions.js";
+import { findSessionFile, findAllSessionFiles } from "./claude-sessions.js";
 import {
   extractUserEchoText,
   isHardTurnEnd,
@@ -154,9 +154,40 @@ export const INTERRUPTED_TURN_NOTE = "注意:本会话上一轮处理因等待�
 //   - turn_duration 标 turn 结束才退出
 //   - size < offset 视为 jsonl 截断/轮转,重置 offset
 export class JsonlTailReader {
-  constructor(jsonlPath) {
+  // sessionId 给了才启用"静默重定位"(见 readUntilTurnEnd 内注释);findAll/relocateAfterMs 可注入(测试)。
+  constructor(jsonlPath, { sessionId = null, findAll = findAllSessionFiles, relocateAfterMs = Number(process.env.CLI_POOL_RELOCATE_MS) || 60000 } = {}) {
     this.path = jsonlPath;
     this.offset = 0;
+    this.sessionId = sessionId;
+    this._findAll = findAll;
+    this.relocateAfterMs = relocateAfterMs;
+    this._lastRelocateCheck = 0;
+  }
+
+  // 静默重定位(2026-07-17,case 4fb95516):worker 中途 EnterWorktree / 切 cwd 会把会话 jsonl 迁进
+  // 别的 projects 子目录,旧路径不再增长 → bridge 傻等 = "CC 在干活,TG 无输出"。静默超过
+  // relocateAfterMs 时全局重查该 sessionId 的所有 jsonl 副本,跟到更新鲜的那份续读。
+  // 用全量查找 + mtime 择新(codex review P2):迁移可能"复制留旧"——first-match 会一直撞旧文件永不
+  // 切换。收集全部候选,只在"别处副本比当前文件更新鲜"时才切(当前文件还在长就绝不乱跳;当前文件
+  // 已被删则任何候选都算新);多副本共存选 mtime 最大的。
+  // offset 保持不变:CC 迁移 = 复制旧内容 + 续写,新文件前缀与旧文件字节级一致,旧 offset 正好衔接
+  // 新增行;若新文件反而更短(异常轮转),offset 归 0 兜底,重放行由调用方 spawnStartedAt 时间戳归属门滤掉。
+  maybeRelocate(now = Date.now()) {
+    if (!this.sessionId) return false;
+    if (now - this._lastRelocateCheck < this.relocateAfterMs) return false;
+    this._lastRelocateCheck = now;
+    let candidates = [];
+    try { candidates = (this._findAll(this.sessionId) || []).filter(c => c?.path && c.path !== this.path); } catch { return false; }
+    if (!candidates.length) return false;
+    candidates.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
+    const target = candidates[0];
+    let curMtime = 0;
+    try { curMtime = existsSync(this.path) ? statSync(this.path).mtimeMs : 0; } catch { curMtime = 0; }
+    if ((target.mtime || 0) <= curMtime) return false;  // 当前文件更新鲜/同龄 → 不动
+    console.warn(`[cli-pool] session ${String(this.sessionId).slice(0, 8)} jsonl relocated: ${this.path} -> ${target.path}, following`);
+    this.path = target.path;
+    if (target.size < this.offset) this.offset = 0;
+    return true;
   }
 
   resetToCurrentEnd() {
@@ -266,8 +297,13 @@ export class JsonlTailReader {
       if (echoGraceMs && !userEchoSeen && Date.now() - turnStart > echoGraceMs) {
         throw new Error(`ECHO_TIMEOUT:本轮 ${Math.round(echoGraceMs / 1000)}s 内未识别到 user echo(op:reply 可能未投递成功)`);
       }
-      // 静默心跳:距上次 jsonl 活动 ≥ heartbeatMs 且距上次心跳 ≥ heartbeatMs → 报"还在跑",不退出
       const now = Date.now();
+      // 静默重定位:jsonl 静默超过 relocateAfterMs(默认 60s,先于心跳 180s)→ 查一次会话文件是否迁走
+      // (EnterWorktree / cwd 迁移),挪了就跟过去。命中即刷新活动时刻,给新文件一个观察窗。
+      if (now - lastActivity >= this.relocateAfterMs && this.maybeRelocate(now)) {
+        lastActivity = now;
+      }
+      // 静默心跳:距上次 jsonl 活动 ≥ heartbeatMs 且距上次心跳 ≥ heartbeatMs → 报"还在跑",不退出
       if (now - lastActivity >= heartbeatMs && now - lastHeartbeat >= heartbeatMs) {
         lastHeartbeat = now;
         yield { type: "idle_heartbeat", idleSec: Math.round((now - lastActivity) / 1000), elapsedSec: Math.round((now - turnStart) / 1000) };

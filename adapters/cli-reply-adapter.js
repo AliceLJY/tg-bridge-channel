@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { JsonlTailReader, buildTurnArgs, readRoster } from "./cli-pool.js";
 import { DaemonClient, findLiveWorkerBySession, sessionJsonlPath } from "./daemon-client.js";
-import { listSessionFiles, findSessionFile, parseSessionFile } from "./claude-sessions.js";
+import { listSessionFiles, findSessionFile, parseSessionFile, probeSessionFile } from "./claude-sessions.js";
 import { stripMalformedToolCall } from "./sanitize-text.js";
 
 const CLAUDE_CLI_PATH = process.env.CLAUDE_CLI_PATH || join(homedir(), ".local/bin/claude");
@@ -99,6 +99,25 @@ export async function selfHealStuckWorker(short, { list, kill, rosterHas, waitMs
     return true;  // kill 已发出但 roster 迟迟不摘:仍重投——最坏再 ECHO_TIMEOUT 一次,由 __echoRetried 兜住不循环
   } catch { return false; }
 }
+
+// 幽灵会话判定(2026-07-17,case 4fb95516):sessionId 有值但该会话的 jsonl 全局不存在 = 黑洞 ID
+// (fork 复活在"加载历史→写首行"窗口内被取消 / worker 卡死在落盘前,留下的悬空 ID)。--resume 它会
+// "干净退化成新会话"(静默),但下轮 bridge 又把新 fork 的 sid 存回,用户再取消又造一个黑洞 → 死循环
+// (2026-07-17 mccode2 实况:每条消息进黑洞,只能靠人重启)。主动识别:ghost=true → 调用方直接开
+// 新会话并在回复开头明说。
+// fail-open 用三态查找 probeSessionFile(codex review P1):"扫描失败"≠"确认不存在"——目录瞬时
+// 不可读时按"存在"处理照常 resume,只有全目录扫完确无文件才判幽灵,绝不因一次 IO 失败丢上下文。
+export function resolveResumeSid(sessionId, { probeSession = probeSessionFile } = {}) {
+  const sid = sessionId || null;
+  if (!sid) return { sid: null, ghost: false };
+  let probe;
+  try { probe = probeSession(sid); } catch { probe = { found: null, scanFailed: true }; }
+  if (probe?.found || probe?.scanFailed) return { sid, ghost: false };
+  return { sid: null, ghost: true };
+}
+
+// 幽灵会话提示语(拼在本轮回复开头,让用户知道上下文没续上,而非静默退化)
+export const GHOST_SESSION_NOTICE = "⚠️ 上个会话的记录文件不存在(多半是之前取消/故障留下的悬空会话),这条起我开了个新会话——旧上下文没续上,需要的话把背景再交代一句。\n\n";
 
 // pool 风格事件映射(与 cli-pool-adapter 一致):累积 text(turn_end 用它兜底回传 —— bridge 用 result.text
 // 发 TG,不累积会"无输出");AskUserQuestion 静默跳过(hook 已拦、模型自主续写);idle_heartbeat→heartbeat。
@@ -191,7 +210,7 @@ export function createAdapter(config = {}) {
           if (ack.ok) {
             state.turnStartAt = replyStartedAt;  // 本轮耗时基准:不信任 jsonl turn_duration(常驻 worker 下是累计/残留值 → 假"几十分钟")
             yield { type: "session_init", sessionId: worker.sessionId };  // 不变,幂等(bridge 持久化它)
-            const reader = new JsonlTailReader(worker.jsonlPath);
+            const reader = new JsonlTailReader(worker.jsonlPath, { sessionId: worker.sessionId });  // sessionId → 静默重定位(worktree 迁移)
             reader.offset = offset;  // offset 限制重读字节量(长会话 jsonl 大);正确性靠下面的归属门
             // 归属门(2026-06-14 复核结论,勿改回 assumeEchoSeen):op:reply 后必须等本轮 user echo 才开闸——上一轮
             // soft-end 早退后 worker 晚写的 turn_duration 可能 ts >= replyStartedAt、落在 offset 之后,若起始即开闸会被
@@ -213,23 +232,29 @@ export function createAdapter(config = {}) {
         // spawn 失败兜底(codex P2 的稳妥版):spawnWorker 因超时 / 没拿到 short 等异常 reject 时,若本轮是 resume → 退回全新建重试一次。
         // 注(2026-06-14 实测):`--bg --resume <失效 sid>` 本身【不会 reject】——它干净退化成一个新会话(exit 0、照常 backgrounded),
         // 所以 print 引擎那种"session 被删 → 每轮报错卡到 /new"在 --bg 这边天然不存在;这条兜的主要是 spawn 进程本身的异常。
+        // 幽灵会话轮前校验(2026-07-17):黑洞 ID 不 resume,直接新建 + 回复开头明示(一条消息自愈,见 resolveResumeSid)。
+        const { sid: resumeSid, ghost } = resolveResumeSid(sessionId);
+        if (ghost) {
+          console.warn(`[cli-reply-adapter] ghost session ${String(sessionId).slice(0, 8)}: no jsonl anywhere, starting fresh with notice`);
+          state.accumulatedText = GHOST_SESSION_NOTICE;
+        }
         let turn;
         try {
-          turn = await spawnWorker(turnConfig, prompt, { resumeSessionId: sessionId || null, model, effort, cwd: turnCwd, systemAppend });
+          turn = await spawnWorker(turnConfig, prompt, { resumeSessionId: resumeSid, model, effort, cwd: turnCwd, systemAppend });
         } catch (spawnErr) {
-          const sid8 = String(sessionId || "").slice(0, 8);
+          const sid8 = String(resumeSid || "").slice(0, 8);
           // roster 超时:spawnWorker 已 stop 掉那个慢 worker(防它带新 sid 后台双跑 / 重复副作用,codex P2)。
           // 绝不静默退化成新会话(resumeSessionId:null)—— 那会把旧上下文整段丢掉(Alice"隔久了接不上"的真凶)。
           // 保留旧 sessionId(bridge 不更新 → 下条消息仍 --resume 同一段历史),提示重发:重发是干净的单 worker、
           // 窗口已 30s,大概率接上;上下文始终不丢。
-          if (sessionId && (spawnErr.message || "").includes("roster did not surface sessionId")) {
+          if (resumeSid && (spawnErr.message || "").includes("roster did not surface sessionId")) {
             console.warn(`[cli-reply-adapter] resume slow for ${sid8} (${spawnErr.message}); stopped slow worker, preserving session, asking resend`);
             yield { type: "result", success: true, text: "刚才那条复活旧会话慢了点(会话没丢),隔两三秒再发一遍就接上了～" };
             return;
           }
           // 其他失败(spawn 30s 超时 / stdout 没给 short = worker 真没起来):旧会话这条确实接不上,
           // 退回全新重试一次(保留原行为,至少给用户一个能回话的会话)。
-          if (sessionId) {
+          if (resumeSid) {
             console.warn(`[cli-reply-adapter] resume spawn failed for ${sid8} (${spawnErr.message}); retrying as new session`);
             turn = await spawnWorker(turnConfig, prompt, { resumeSessionId: null, model, effort, cwd: turnCwd, systemAppend });
           } else { throw spawnErr; }
@@ -237,7 +262,7 @@ export function createAdapter(config = {}) {
         activeShort = turn.short;
         state.turnStartAt = turn.spawnStartedAt;  // 同上:本轮耗时用 wall-clock,不信 jsonl turn_duration
         yield { type: "session_init", sessionId: turn.sessionId };
-        const reader = new JsonlTailReader(turn.jsonlPath);
+        const reader = new JsonlTailReader(turn.jsonlPath, { sessionId: turn.sessionId });  // sessionId → 静默重定位(worktree 迁移)
         for await (const ev of reader.readUntilTurnEnd({ expectUserText: prompt, spawnStartedAt: turn.spawnStartedAt, heartbeatMs, hardLimitMs, abortSignal }))
           for (const m of mapEvents(ev, state)) yield m;
       } catch (e) {

@@ -144,3 +144,77 @@ describe("saveCapturedSession 写回防护", () => {
     expect(h.calls.length).toBe(0);
   });
 });
+
+// 防护三（2026-07-17 case 4fb95516）：换代出的新 sid 必须已落盘才写回，防"黑洞 ID"
+// （fork 复活半途被取消 → 新 sid 永无文件 → 写回后每条消息 resume 不存在的会话 = 死循环）。
+describe("saveCapturedSession 防护三：幽灵 ID（会话文件未落盘）", () => {
+  test("换代 + 新 sid 无会话文件 → 不写回，旧映射保留", () => {
+    const h = makeHarness({ currentSessionId: "aaa-start" });
+    const saved = saveCapturedSession({
+      ...h.args,
+      capturedSessionId: "bbb-ghost",
+      sessionId: "aaa-start",
+      sessionFileExists: () => false,
+    });
+    expect(saved).toBe(false);
+    expect(h.calls.length).toBe(0);
+  });
+
+  test("换代 + 新 sid 文件在盘上 → 正常保存", () => {
+    const h = makeHarness({ currentSessionId: "aaa-start" });
+    const saved = saveCapturedSession({
+      ...h.args,
+      capturedSessionId: "bbb-captured",
+      sessionId: "aaa-start",
+      sessionFileExists: () => true,
+    });
+    expect(saved).toBe(true);
+    expect(h.calls[0][1]).toBe("bbb-captured");
+  });
+
+  test("同 sid 轮（op:reply 未换代）→ 不查盘直接保存", () => {
+    const h = makeHarness({ currentSessionId: "aaa-start" });
+    let probed = 0;
+    const saved = saveCapturedSession({
+      ...h.args,
+      capturedSessionId: "aaa-start",
+      sessionId: "aaa-start",
+      sessionFileExists: () => { probed++; return false; },
+    });
+    expect(saved).toBe(true);
+    expect(probed).toBe(0);
+  });
+
+  test("新会话第一轮（sessionId=null，captured 有文件）→ 保存", () => {
+    const h = makeHarness({ currentSessionId: null });
+    const saved = saveCapturedSession({
+      ...h.args,
+      capturedSessionId: "bbb-captured",
+      sessionId: null,
+      sessionFileExists: () => true,
+    });
+    expect(saved).toBe(true);
+  });
+
+  test("新会话第一轮 spawn 半途被取消（sessionId=null，captured 无文件）→ 不写回", () => {
+    const h = makeHarness({ currentSessionId: null });
+    const saved = saveCapturedSession({
+      ...h.args,
+      capturedSessionId: "bbb-ghost",
+      sessionId: null,
+      sessionFileExists: () => false,
+    });
+    expect(saved).toBe(false);
+    expect(h.calls.length).toBe(0);
+  });
+
+  test("不传 sessionFileExists（codex/gemini/旧调用方）→ 行为不变", () => {
+    const h = makeHarness({ currentSessionId: "aaa-start" });
+    const saved = saveCapturedSession({
+      ...h.args,
+      capturedSessionId: "bbb-captured",
+      sessionId: "aaa-start",
+    });
+    expect(saved).toBe(true);
+  });
+});

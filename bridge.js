@@ -57,6 +57,7 @@ import { createStreamingPreview } from "./streaming-preview.js";
 import { markdownToTelegramHTML, hasMarkdownFormatting } from "./markdown-to-tg.js";
 import { extractFilePathsFromText, extractProgressBroadcasts, sanitizeBackendError, sendCapturedOutputs, sendFinalResult, stripProgressBroadcasts } from "./output-relay.js";
 import { createTaskFinalizer, finishTurnProgress, saveCapturedSession } from "./turn-state.js";
+import { probeSessionFile } from "./adapters/claude-sessions.js";
 import { registerCommands } from "./commands/index.js";
 import { startEntrypointPatcher } from "./scripts/patch-entrypoint.js";
 import {
@@ -1440,6 +1441,13 @@ async function processPrompt(ctx, prompt) {
         peekSession,
         getResetAt: getSessionResetAt,
         turnStartedAt: startTime,
+        // 防护三(幽灵 ID)只对 claude 后端启用:jsonl 体系可全局查盘;codex/gemini 的会话不在
+        // ~/.claude/projects 下,传了会把它们的换代轮全误判成幽灵 → 永不保存,故不传。
+        // fail-open 用三态查找(codex review P1):found 或 scanFailed 都按"存在"放行保存——
+        // 只有全目录扫完确无文件才拦。瞬时 IO 失败绝不拦有效新 ID(否则首轮丢映射/续轮留旧 ID)。
+        ...(backendName === "claude"
+          ? { sessionFileExists: (sid) => { try { const p = probeSessionFile(sid); return !!p.found || p.scanFailed; } catch { return true; } } }
+          : {}),
         patchCodexStateDb,
       })
       : false;

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { mapEvents, selfHealStuckWorker } from "./cli-reply-adapter.js";
+import { mapEvents, selfHealStuckWorker, resolveResumeSid, GHOST_SESSION_NOTICE } from "./cli-reply-adapter.js";
 
 // mapEvents(ev, state):reply 引擎把 cli-pool 底层事件映射成 bridge 统一事件。
 // state 形如 { accumulatedText, turnStartAt }(turn_end 用 accumulatedText 兜底回传)。
@@ -109,5 +109,36 @@ describe("selfHealStuckWorker", () => {
       ...fast,
     });
     expect(healed).toBe(true);
+  });
+});
+
+// 幽灵会话判定(2026-07-17,case 4fb95516):黑洞 ID(jsonl 从未落盘)不 resume,直接新建 + 明示,
+// 一条消息自愈,不再"静默退化 → 用户取消 → 再造黑洞"死循环。probeSession 注入(三态,codex review P1)。
+describe("resolveResumeSid 幽灵会话判定", () => {
+  test("无 sessionId → 全新会话,非幽灵", () => {
+    expect(resolveResumeSid(null, { probeSession: () => { throw new Error("不该被调"); } }))
+      .toEqual({ sid: null, ghost: false });
+  });
+
+  test("jsonl 在盘上 → 原样 resume", () => {
+    const probed = [];
+    expect(resolveResumeSid("aaa-111", { probeSession: sid => { probed.push(sid); return { found: { path: "/x/aaa-111.jsonl" }, scanFailed: false }; } }))
+      .toEqual({ sid: "aaa-111", ghost: false });
+    expect(probed).toEqual(["aaa-111"]);
+  });
+
+  test("全目录扫完确无文件 → 幽灵:sid 置空走全新建", () => {
+    expect(resolveResumeSid("bbb-ghost", { probeSession: () => ({ found: null, scanFailed: false }) }))
+      .toEqual({ sid: null, ghost: true });
+  });
+
+  test("扫描失败(scanFailed=true)→ fail-open:按存在处理照常 resume,不因瞬时 IO 失败丢上下文", () => {
+    expect(resolveResumeSid("ccc-222", { probeSession: () => ({ found: null, scanFailed: true }) }))
+      .toEqual({ sid: "ccc-222", ghost: false });
+  });
+
+  test("probe 本身抛异常 → fail-open:照常 resume", () => {
+    expect(resolveResumeSid("ddd-333", { probeSession: () => { throw new Error("EACCES"); } }))
+      .toEqual({ sid: "ddd-333", ghost: false });
   });
 });

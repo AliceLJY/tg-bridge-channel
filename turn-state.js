@@ -29,6 +29,7 @@ export function saveCapturedSession({
   peekSession = null,
   getResetAt = null,
   turnStartedAt = 0,
+  sessionFileExists = null,
   patchCodexStateDb,
   logger = console,
 }) {
@@ -58,6 +59,17 @@ export function saveCapturedSession({
       logger.log(`[Session Debug] NOT saving session: mapping changed during turn (started=${startedFrom?.slice(0, 8) || "null"}, now=${currentId?.slice(0, 8) || "null"}, captured=${capturedSessionId.slice(0, 8)}...)`);
       return false;
     }
+  }
+
+  // 防护三（幽灵 ID，2026-07-17 case 4fb95516）：本轮【换代】出的新 sessionId 必须已在盘上有会话文件才写回。
+  // fork 复活在"加载历史→写首行"窗口内被取消/卡死时，新 sid 永远不会落盘——写回它就是黑洞 ID：
+  // 之后每条消息 resume 一个不存在的会话，静默退化、用户再取消又造新黑洞，死循环（mccode2 实况）。
+  // 保留旧 sessionId（db 不动），下条消息仍 --resume 旧会话 → 上下文不丢。
+  // 同 sid 轮（op:reply 未换代）跳过：文件本就存在，省一次全局扫。sessionFileExists 由 bridge 按
+  // backend 决定是否注入（只有 claude 的 jsonl 体系可查；codex/gemini 不传 = 不检查，行为不变）。
+  if (typeof sessionFileExists === "function" && capturedSessionId !== sessionId && !sessionFileExists(capturedSessionId)) {
+    logger.log(`[Session Debug] NOT saving session: captured ${capturedSessionId.slice(0, 8)}... has no session file on disk (ghost id, keeping ${sessionId?.slice(0, 8) || "null"})`);
+    return false;
   }
 
   const displayName = prompt.slice(0, 30);

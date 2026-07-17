@@ -63,6 +63,56 @@ export function findSessionFile(sessionId) {
   return null;
 }
 
+// 三态查找(2026-07-17 codex review P1):findSessionFile 把"扫描失败"吞成 null,调用方无法与
+// "确认不存在"区分——幽灵判定/写回防护误把瞬时 IO 失败当"文件不存在",会丢上下文/丢会话映射。
+// 返回 { found: fileInfo|null, scanFailed: boolean }:
+//   - found 非空 → 确证存在(即使途中有目录读失败,找到即为准);
+//   - found 空 + scanFailed=false → 全部目录扫完确无此文件(可放心判幽灵);
+//   - found 空 + scanFailed=true  → 结果不可信(顶层/某子目录读失败,文件可能就在那),调用方按"存在"兜底。
+export function probeSessionFile(sessionId) {
+  const projectsDir = join(homedir(), ".claude", "projects");
+  const target = `${sessionId}.jsonl`;
+  let scanFailed = false;
+  let dirs;
+  // ENOENT(projects 目录不存在)= 这台机从没写过会话,任何 sid 都确认不存在,不算扫描失败;
+  // EACCES/EIO 等才是"结果不可信"。子目录同理:列出后被删(ENOENT race)当"该目录无文件"。
+  try { dirs = readdirSync(projectsDir); } catch (e) { return { found: null, scanFailed: e?.code !== "ENOENT" }; }
+  for (const dir of dirs) {
+    const fullDir = join(projectsDir, dir);
+    try {
+      if (!statSync(fullDir).isDirectory()) continue;
+      if (readdirSync(fullDir).includes(target)) {
+        const path = join(fullDir, target);
+        const stat = statSync(path);
+        return { found: { file: target, path, mtime: stat.mtimeMs, size: stat.size, sessionId }, scanFailed: false };
+      }
+    } catch (e) { if (e?.code !== "ENOENT") scanFailed = true; }
+  }
+  return { found: null, scanFailed };
+}
+
+// 全量查找(2026-07-17 codex review P2):cwd/worktree 迁移可能"复制留旧"——同一 sessionId 的 jsonl
+// 多目录共存,first-match(findSessionFile)会一直撞旧文件。重定位要收集全部候选,由调用方按 mtime 择新。
+export function findAllSessionFiles(sessionId) {
+  const projectsDir = join(homedir(), ".claude", "projects");
+  const target = `${sessionId}.jsonl`;
+  const out = [];
+  try {
+    for (const dir of readdirSync(projectsDir)) {
+      const fullDir = join(projectsDir, dir);
+      try {
+        if (!statSync(fullDir).isDirectory()) continue;
+        if (readdirSync(fullDir).includes(target)) {
+          const path = join(fullDir, target);
+          const stat = statSync(path);
+          out.push({ file: target, path, mtime: stat.mtimeMs, size: stat.size, sessionId });
+        }
+      } catch { /* skip unreadable dir */ }
+    }
+  } catch { /* projects 不可读 → 空列表,调用方不动 */ }
+  return out;
+}
+
 export async function parseSessionFile(fileInfo, fallbackCwd) {
   let firstTopic = "", lastTopic = "", resolvedCwd = "";
   try {
