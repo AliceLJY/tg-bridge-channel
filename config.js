@@ -36,6 +36,11 @@ function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function hasTerminalFormattingArtifact(value) {
+  const text = String(value ?? "");
+  return /[\u0000-\u001F\u007F]/.test(text) || /\[[0-9;]{1,16}m\]?$/.test(text);
+}
+
 function pushIssue(issues, path, message) {
   issues.push({ path, message });
 }
@@ -149,6 +154,12 @@ function ensureParentDirectoryExists(issues, pathLabel, targetPath) {
 function validatePositiveIntegerField(issues, path, value) {
   if (!isPositiveInteger(value)) {
     pushIssue(issues, path, "must be a positive integer.");
+  }
+}
+
+function validateModelField(issues, path, value) {
+  if (isNonEmptyString(value) && hasTerminalFormattingArtifact(value)) {
+    pushIssue(issues, path, "must not contain terminal control or formatting fragments.");
   }
 }
 
@@ -490,6 +501,7 @@ export function validateConfig(config, options = {}) {
     if (!isNonEmptyString(backendConfig.sessionsDb)) {
       pushIssue(issues, `backends.${backend}.sessionsDb`, "must be set.");
     }
+    validateModelField(issues, `backends.${backend}.model`, backendConfig.model);
 
     if (backend === "claude" && !CLAUDE_PERMISSION_MODES.includes(String(backendConfig.permissionMode || "").trim())) {
       pushIssue(
@@ -602,6 +614,15 @@ export function validateResolvedEnv(env, options = {}) {
     && !CLAUDE_PERMISSION_MODES.includes(String(env.CC_PERMISSION_MODE).trim())
   ) {
     pushIssue(issues, "CC_PERMISSION_MODE", `must be one of: ${CLAUDE_PERMISSION_MODES.join(", ")}.`);
+  }
+
+  const modelEnvName = {
+    claude: "CC_MODEL",
+    codex: "CODEX_MODEL",
+    gemini: "GEMINI_MODEL",
+  }[selectedBackend];
+  if (modelEnvName) {
+    validateModelField(issues, modelEnvName, env[modelEnvName]);
   }
 
   if (selectedBackend === "gemini") {

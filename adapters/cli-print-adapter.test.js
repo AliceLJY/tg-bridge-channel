@@ -14,7 +14,7 @@ function flagVal(args, flag) {
   return i >= 0 ? args[i + 1] : undefined;
 }
 
-const baseConfig = { model: "opus[1m]", effort: "max", permissionMode: "bypassPermissions", cwd: "/home/x", destructiveGuard: false, remoteControl: true };
+const baseConfig = { model: "opus", effort: "max", permissionMode: "bypassPermissions", cwd: "/home/x", destructiveGuard: false, remoteControl: true };
 
 describe("buildPrintArgs", () => {
   test("有 sessionId → --resume,不带 --session-id,sessionIdUsed 原样", () => {
@@ -46,7 +46,7 @@ describe("buildPrintArgs", () => {
   });
 
   test("model __default__ 哨兵 → 用 config.model;显式覆盖 → 用覆盖值", () => {
-    expect(flagVal(buildPrintArgs(baseConfig, { sessionId: "s", model: "__default__" }).args, "--model")).toBe("opus[1m]");
+    expect(flagVal(buildPrintArgs(baseConfig, { sessionId: "s", model: "__default__" }).args, "--model")).toBe("opus");
     expect(flagVal(buildPrintArgs(baseConfig, { sessionId: "s", model: "sonnet" }).args, "--model")).toBe("sonnet");
   });
 

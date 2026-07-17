@@ -1,6 +1,6 @@
 {
   "name": "tg-bridge-channel",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Self-hosted Telegram bridge for Claude Code, Codex, and Gemini, with SDK and version-coupled local CLI engines plus the A2A-TG group-chat protocol.",
   "type": "module",
   "main": "bridge.js",

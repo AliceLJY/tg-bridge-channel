@@ -11,6 +11,7 @@ import {
   resolveCliArgs,
   summarizeRuntime,
   validateConfig,
+  validateResolvedEnv,
 } from "./config.js";
 
 const tempDirs = [];
@@ -95,6 +96,26 @@ describe("config productization", () => {
     const issues = validateConfig(config);
 
     expect(issues.map((issue) => issue.path)).toContain("shared.a2aToolMode");
+  });
+
+  test("model fields reject terminal formatting artifacts", () => {
+    const config = createDefaultConfig();
+    config.backends.claude.enabled = true;
+    config.backends.claude.model = "opus[1m]";
+
+    const configIssues = validateConfig(config);
+    expect(configIssues.map((issue) => issue.path)).toContain("backends.claude.model");
+
+    const runtimeIssues = validateResolvedEnv({
+      DEFAULT_BACKEND: "claude",
+      ENABLED_BACKENDS: "claude",
+      OWNER_TELEGRAM_ID: "123456789",
+      TELEGRAM_BOT_TOKEN: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+      CC_CWD: makeTempDir(),
+      CC_MODEL: "\u001b[1mopus",
+      CC_PERMISSION_MODE: "default",
+    });
+    expect(runtimeIssues.map((issue) => issue.path)).toContain("CC_MODEL");
   });
 
   test("loadRuntimeConfig resolves config paths and summarizeRuntime redacts secrets", () => {
