@@ -150,17 +150,20 @@ describe("config productization", () => {
     expect(summary.env.TELEGRAM_BOT_TOKEN).toBe("1234…WXYZ");
   });
 
-  test("loadRuntimeConfig exposes discuss chat allowlist without changing defaults", () => {
+  test("loadRuntimeConfig exposes discuss and output-relay chat allowlists without changing defaults", () => {
     const repoDir = makeTempDir();
     const configPath = join(repoDir, "config.json");
     writeConfig(configPath, (config) => {
       config.shared.discussChatIds = [-1001234567890, "-1009876543210"];
+      config.shared.outputRelayTrustedChatIds = ["-1001234567890"];
     });
 
     const runtime = loadRuntimeConfig({ backend: "claude", configPath });
 
     expect(createDefaultConfig().shared.discussChatIds).toEqual([]);
+    expect(createDefaultConfig().shared.outputRelayTrustedChatIds).toEqual([]);
     expect(runtime.env.DISCUSS_CHAT_IDS).toBe("-1001234567890,-1009876543210");
+    expect(runtime.env.OUTPUT_RELAY_TRUSTED_CHAT_IDS).toBe("-1001234567890");
     expect(validateConfig(runtime.config)).toEqual([]);
   });
 
@@ -177,6 +180,36 @@ describe("config productization", () => {
     const issues = validateConfig(config);
 
     expect(issues.map((issue) => issue.path)).toContain("shared.discussChatIds");
+  });
+
+  test("validateConfig rejects invalid output-relay trusted chat ids", () => {
+    const config = createDefaultConfig();
+    config.shared.ownerTelegramId = "123456789";
+    config.shared.cwd = makeTempDir();
+    config.shared.tasksDb = "tasks.db";
+    config.backends.claude.enabled = true;
+    config.backends.claude.telegramBotToken = "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    config.backends.claude.sessionsDb = "sessions.db";
+    config.shared.outputRelayTrustedChatIds = ["not-a-chat-id"];
+
+    const issues = validateConfig(config);
+
+    expect(issues.map((issue) => issue.path)).toContain("shared.outputRelayTrustedChatIds");
+  });
+
+  test("validateConfig accepts configs created before the output-relay allowlist existed", () => {
+    const config = createDefaultConfig();
+    config.shared.ownerTelegramId = "123456789";
+    config.shared.cwd = makeTempDir();
+    config.shared.tasksDb = "tasks.db";
+    config.backends.claude.enabled = true;
+    config.backends.claude.telegramBotToken = "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    config.backends.claude.sessionsDb = "sessions.db";
+    delete config.shared.outputRelayTrustedChatIds;
+
+    const issues = validateConfig(config);
+
+    expect(issues.map((issue) => issue.path)).not.toContain("shared.outputRelayTrustedChatIds");
   });
 
   test("loadRuntimeConfig rejects configs whose working directory does not exist", () => {

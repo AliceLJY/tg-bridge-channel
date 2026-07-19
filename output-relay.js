@@ -1,9 +1,133 @@
-import { existsSync, readFileSync } from "fs";
-import { basename } from "path";
+import { existsSync, readFileSync, realpathSync, statSync } from "fs";
+import { basename, extname, isAbsolute, relative, resolve, sep } from "path";
 
 const SENDABLE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".docx", ".xlsx", ".csv", ".html", ".svg"]);
 const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
-const DOC_EXTS = new Set([".pdf", ".docx", ".xlsx", ".csv", ".html", ".txt", ".md", ".json", ".js", ".ts", ".py", ".sh", ".yaml", ".yml", ".xml", ".log", ".zip", ".tar", ".gz"]);
+const DOC_EXTS = new Set([".pdf", ".docx", ".xlsx", ".csv", ".html", ".svg", ".txt", ".md", ".json", ".js", ".ts", ".py", ".sh", ".yaml", ".yml", ".xml", ".zip", ".tar", ".gz"]);
+const DEFAULT_RELAY_MAX_BYTES = 20 * 1024 * 1024;
+const SENSITIVE_DIR_NAMES = new Set([
+  "auth",
+  "config",
+  "configs",
+  "credential",
+  "credentials",
+  "keys",
+  "log",
+  "logs",
+  "oauth",
+  "secret",
+  "secrets",
+  "session",
+  "sessions",
+  "tokens",
+]);
+const SENSITIVE_FILE_STEM_RE = /^(?:access[-_.]?token|api[-_.]?key|auth|authorization|client[-_.]?secret|config|cookie|cookies|credential|credentials|debug|history|key|keys|login|oauth2?|oauth[-_.]?creds?|password|passwd|private[-_.]?key|refresh[-_.]?token|secret|secrets|service[-_.]?account|session|sessions|settings|stderr|stdout|token|tokens|transcript)(?:[-_.].*)?$/i;
+const SECRET_FILE_PART_RE = /(?:^|[-_.])(?:access[-_.]?token|api[-_.]?key|auth|client[-_.]?secret|credential|credentials|key|keys|oauth[-_.]?creds?|password|passwd|private[-_.]?key|refresh[-_.]?token|secret|secrets|service[-_.]?account|token|tokens)(?=$|[-_.])/i;
+
+function isPathInside(rootPath, candidatePath) {
+  const rel = relative(rootPath, candidatePath);
+  return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));
+}
+
+function pathSegments(rootPath, candidatePath) {
+  const rel = relative(rootPath, candidatePath);
+  if (!rel || rel === ".") return [];
+  return rel.split(sep).filter(Boolean);
+}
+
+function hasBlockedPathSegment(segments) {
+  return segments.some((segment, index) => {
+    if (/[\u0000-\u001f\u007f]/.test(segment)) return true;
+    if (segment.startsWith(".")) return true;
+    return index < segments.length - 1 && SENSITIVE_DIR_NAMES.has(segment.toLowerCase());
+  });
+}
+
+function safeLogBasename(filePath, basenameFn = basename) {
+  return basenameFn(String(filePath))
+    .replace(/[\u0000-\u001f\u007f]/g, "?")
+    .slice(0, 160) || "unnamed";
+}
+
+function hasSensitiveFileName(fileName, ext) {
+  const lowerName = fileName.toLowerCase();
+  if (ext === ".log") return true;
+  const stem = ext ? lowerName.slice(0, -ext.length) : lowerName;
+  return SENSITIVE_FILE_STEM_RE.test(stem) || SECRET_FILE_PART_RE.test(stem);
+}
+
+export function authorizeRelayFile(filePath, {
+  rootDir,
+  fileDir = "",
+  home = process.env.HOME ?? "",
+  maxBytes = DEFAULT_RELAY_MAX_BYTES,
+  realpath = realpathSync,
+  stat = statSync,
+} = {}) {
+  if (typeof filePath !== "string" || !filePath.trim() || typeof rootDir !== "string" || !rootDir.trim()) {
+    return { ok: false, reason: "policy" };
+  }
+
+  try {
+    const lexicalRoot = resolve(rootDir);
+    const expandedPath = filePath.startsWith("~/")
+      ? resolve(home, filePath.slice(2))
+      : filePath;
+    const lexicalPath = isAbsolute(expandedPath)
+      ? resolve(expandedPath)
+      : resolve(lexicalRoot, expandedPath);
+
+    // 先按用户提供的路径做边界和隐藏路径检查，再跟随符号链接复核真实路径。
+    if (!isPathInside(lexicalRoot, lexicalPath)) return { ok: false, reason: "policy" };
+    if (hasBlockedPathSegment(pathSegments(lexicalRoot, lexicalPath))) {
+      return { ok: false, reason: "policy" };
+    }
+
+    const realRoot = realpath(lexicalRoot);
+    const realPath = realpath(lexicalPath);
+    if (!isPathInside(realRoot, realPath)) return { ok: false, reason: "policy" };
+    if (hasBlockedPathSegment(pathSegments(realRoot, realPath))) {
+      return { ok: false, reason: "policy" };
+    }
+
+    if (fileDir) {
+      try {
+        const realFileDir = realpath(resolve(fileDir));
+        if (isPathInside(realFileDir, realPath)) return { ok: false, reason: "policy" };
+      } catch {
+        // 下载暂存目录不存在时，无需阻断其他合法产物。
+      }
+    }
+
+    const fileStat = stat(realPath);
+    if (!fileStat.isFile()) return { ok: false, reason: "policy" };
+
+    const ext = extname(realPath).toLowerCase();
+    if (!IMAGE_EXTS.has(ext) && !DOC_EXTS.has(ext)) return { ok: false, reason: "policy" };
+    if (hasSensitiveFileName(basename(realPath), ext)) return { ok: false, reason: "policy" };
+
+    const effectiveMaxBytes = Number.isFinite(maxBytes) && maxBytes > 0
+      ? maxBytes
+      : DEFAULT_RELAY_MAX_BYTES;
+    if (fileStat.size > effectiveMaxBytes) return { ok: false, reason: "policy" };
+
+    return {
+      ok: true,
+      path: realPath,
+      ext,
+      size: fileStat.size,
+    };
+  } catch {
+    return { ok: false, reason: "policy" };
+  }
+}
+
+export function isAutoFileRelayAllowed({ chat, from, ownerId, trustedChatIds = [] } = {}) {
+  if (from?.id !== ownerId) return false;
+  if (chat?.type === "private") return true;
+  if (chat?.type !== "group" && chat?.type !== "supergroup") return false;
+  return new Set([...trustedChatIds].map((id) => String(id))).has(String(chat.id));
+}
 
 export function extractFilePathsFromText(text, fileList, options = {}) {
   const home = options.home ?? process.env.HOME ?? "";
@@ -125,14 +249,17 @@ export async function sendCapturedOutputs({
   capturedImages,
   capturedFiles,
   imageFloodSuppressed,
+  allowFileRelay = false,
+  relayRoot,
   fileDir,
   sendPhoto,
   sendDocument,
   logger = console,
   home = process.env.HOME ?? "",
-  exists = existsSync,
   readFile = readFileSync,
   basenameFn = basename,
+  maxFileBytes = DEFAULT_RELAY_MAX_BYTES,
+  authorizeFile = authorizeRelayFile,
   sleepMs = 300,
 }) {
   if (capturedImages.length > 0 || capturedFiles.length > 0) {
@@ -161,26 +288,44 @@ export async function sendCapturedOutputs({
     }
   }
 
-  if (resultSuccess && capturedFiles.length > 0) {
+  if (resultSuccess && capturedFiles.length > 0 && !allowFileRelay) {
+    logger.log("[Bridge] 跳过自动文件回传：当前对话未授权");
+  }
+
+  if (resultSuccess && capturedFiles.length > 0 && allowFileRelay) {
     const sentPaths = new Set();
     for (const file of capturedFiles) {
       if (!file.filePath) continue;
-      const resolved = file.filePath.startsWith("~/") ? file.filePath.replace("~", home) : file.filePath;
-      if (fileDir && resolved.startsWith(fileDir)) continue;
-      if (sentPaths.has(resolved)) continue;
-      const ext = resolved.slice(resolved.lastIndexOf(".")).toLowerCase();
-      if (!IMAGE_EXTS.has(ext) && !DOC_EXTS.has(ext)) continue;
-      if (!exists(resolved)) continue;
-      sentPaths.add(resolved);
-      logger.log(`[Bridge] 发送文件: ${basenameFn(resolved)} (来源: ${file.source})`);
+      const displayName = safeLogBasename(file.filePath, basenameFn);
+      const authorized = authorizeFile(file.filePath, {
+        rootDir: relayRoot,
+        fileDir,
+        home,
+        maxBytes: maxFileBytes,
+      });
+      if (!authorized.ok) {
+        logger.warn?.(`[Bridge] 跳过文件: ${displayName} (安全策略)`);
+        continue;
+      }
+      if (sentPaths.has(authorized.path)) continue;
+      sentPaths.add(authorized.path);
+      const authorizedName = safeLogBasename(authorized.path, basenameFn);
+      const sourceLabel = String(file.source || "unknown").replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 80);
+      logger.log(`[Bridge] 发送文件: ${authorizedName} (来源: ${sourceLabel})`);
       try {
-        if (IMAGE_EXTS.has(ext)) {
-          await sendPhoto(chatId, readFile(resolved), basenameFn(resolved));
+        const payload = readFile(authorized.path);
+        // 文件可能在 stat 后继续增长；读取后再验证一次，避免竞态绕过大小限制。
+        if (Buffer.byteLength(payload) > maxFileBytes) {
+          logger.warn?.(`[Bridge] 跳过文件: ${authorizedName} (安全策略)`);
+          continue;
+        }
+        if (IMAGE_EXTS.has(authorized.ext)) {
+          await sendPhoto(chatId, payload, authorizedName);
         } else {
-          await sendDocument(chatId, readFile(resolved), basenameFn(resolved));
+          await sendDocument(chatId, payload, authorizedName);
         }
       } catch (error) {
-        logger.error(`[Bridge] sendFile failed (${basenameFn(resolved)}): ${error.message}`);
+        logger.error(`[Bridge] sendFile failed (${authorizedName}): ${error.message}`);
       }
     }
   }

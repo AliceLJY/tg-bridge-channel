@@ -1,13 +1,35 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 
 import {
+  authorizeRelayFile,
   detectCodeLang,
   estimateCodeRatio,
   extractFilePathsFromText,
   extractProgressBroadcasts,
+  isAutoFileRelayAllowed,
   sanitizeBackendError,
+  sendCapturedOutputs,
   stripProgressBroadcasts,
 } from "./output-relay.js";
+
+const tempDirs = [];
+
+afterEach(() => {
+  while (tempDirs.length > 0) {
+    rmSync(tempDirs.pop(), { recursive: true, force: true });
+  }
+});
+
+function makeRelayFixture() {
+  const parent = mkdtempSync(join(tmpdir(), "tg-bridge-relay-"));
+  tempDirs.push(parent);
+  const root = join(parent, "workspace");
+  mkdirSync(root);
+  return { parent, root };
+}
 
 describe("output relay helpers", () => {
   test("extracts existing absolute and home-relative file paths without duplicates", () => {
@@ -36,6 +58,169 @@ describe("output relay helpers", () => {
 
     expect(estimateCodeRatio(text)).toBeGreaterThan(0.6);
     expect(detectCodeLang(text)).toBe("ts");
+  });
+});
+
+describe("automatic file relay policy", () => {
+  test("allows owner private turns and only explicitly trusted owner-triggered groups", () => {
+    const owner = { id: 42, is_bot: false };
+    const bot = { id: 99, is_bot: true };
+    const trustedChatIds = ["-1001"];
+
+    expect(isAutoFileRelayAllowed({
+      chat: { id: 42, type: "private" },
+      from: owner,
+      ownerId: 42,
+      trustedChatIds,
+    })).toBe(true);
+    expect(isAutoFileRelayAllowed({
+      chat: { id: -1001, type: "supergroup" },
+      from: owner,
+      ownerId: 42,
+      trustedChatIds,
+    })).toBe(true);
+    expect(isAutoFileRelayAllowed({
+      chat: { id: -1002, type: "group" },
+      from: owner,
+      ownerId: 42,
+      trustedChatIds,
+    })).toBe(false);
+    expect(isAutoFileRelayAllowed({
+      chat: { id: -1001, type: "supergroup" },
+      from: bot,
+      ownerId: 42,
+      trustedChatIds,
+    })).toBe(false);
+    expect(isAutoFileRelayAllowed({
+      chat: { id: 42, type: "channel" },
+      from: owner,
+      ownerId: 42,
+      trustedChatIds,
+    })).toBe(false);
+  });
+
+  test("authorizes only ordinary non-sensitive files inside the real working directory", () => {
+    const { parent, root } = makeRelayFixture();
+    const outputDir = join(root, "dist");
+    mkdirSync(outputDir);
+    const valid = join(outputDir, "report.pdf");
+    writeFileSync(valid, "report");
+
+    const hiddenDir = join(root, ".private");
+    mkdirSync(hiddenDir);
+    const hidden = join(hiddenDir, "report.pdf");
+    writeFileSync(hidden, "hidden");
+    const hiddenFile = join(root, ".report.pdf");
+    writeFileSync(hiddenFile, "hidden");
+
+    const configFile = join(root, "config.json");
+    writeFileSync(configFile, "{}");
+    const oauthFile = join(root, "oauth_creds.json");
+    writeFileSync(oauthFile, "{}");
+    const prefixedTokenFile = join(root, "google-token.json");
+    writeFileSync(prefixedTokenFile, "{}");
+    const logFile = join(root, "run.log");
+    writeFileSync(logFile, "log");
+    const oversized = join(root, "large.pdf");
+    writeFileSync(oversized, "12345");
+    const fakeFile = join(root, "folder.pdf");
+    mkdirSync(fakeFile);
+
+    const outside = join(parent, "outside.pdf");
+    writeFileSync(outside, "outside");
+    const escape = join(root, "escape.pdf");
+    symlinkSync(outside, escape);
+
+    const uploadDir = join(root, "files");
+    mkdirSync(uploadDir);
+    const inboundUpload = join(uploadDir, "inbound.pdf");
+    writeFileSync(inboundUpload, "upload");
+    const similarDir = join(root, "files-safe");
+    mkdirSync(similarDir);
+    const similarArtifact = join(similarDir, "report.pdf");
+    writeFileSync(similarArtifact, "report");
+
+    expect(authorizeRelayFile(valid, { rootDir: root }).ok).toBe(true);
+    expect(authorizeRelayFile("dist/report.pdf", { rootDir: root }).ok).toBe(true);
+    expect(authorizeRelayFile(outside, { rootDir: root }).ok).toBe(false);
+    expect(authorizeRelayFile(escape, { rootDir: root }).ok).toBe(false);
+    expect(authorizeRelayFile(hidden, { rootDir: root }).ok).toBe(false);
+    expect(authorizeRelayFile(hiddenFile, { rootDir: root }).ok).toBe(false);
+    expect(authorizeRelayFile(configFile, { rootDir: root }).ok).toBe(false);
+    expect(authorizeRelayFile(oauthFile, { rootDir: root }).ok).toBe(false);
+    expect(authorizeRelayFile(prefixedTokenFile, { rootDir: root }).ok).toBe(false);
+    expect(authorizeRelayFile(logFile, { rootDir: root }).ok).toBe(false);
+    expect(authorizeRelayFile(oversized, { rootDir: root, maxBytes: 4 }).ok).toBe(false);
+    expect(authorizeRelayFile(fakeFile, { rootDir: root }).ok).toBe(false);
+    expect(authorizeRelayFile(inboundUpload, { rootDir: root, fileDir: uploadDir }).ok).toBe(false);
+    expect(authorizeRelayFile(similarArtifact, { rootDir: root, fileDir: uploadDir }).ok).toBe(true);
+  });
+
+  test("applies the same boundary to text_scan and file_written candidates before reading", async () => {
+    const { parent, root } = makeRelayFixture();
+    const outputDir = join(root, "dist");
+    mkdirSync(outputDir);
+    const fromText = join(outputDir, "summary.md");
+    const fromTool = join(outputDir, "diagram.svg");
+    const sensitive = join(root, "token.json");
+    const outside = join(parent, "outside.md");
+    writeFileSync(fromText, "summary");
+    writeFileSync(fromTool, "<svg></svg>");
+    writeFileSync(sensitive, "blocked");
+    writeFileSync(outside, "blocked");
+
+    const sent = [];
+    const warnings = [];
+    await sendCapturedOutputs({
+      chatId: 42,
+      resultSuccess: true,
+      capturedImages: [],
+      capturedFiles: [
+        { filePath: fromText, source: "text_scan" },
+        { filePath: outside, source: "text_scan" },
+        { filePath: fromTool, source: "Write" },
+        { filePath: sensitive, source: "Write" },
+      ],
+      imageFloodSuppressed: false,
+      allowFileRelay: true,
+      relayRoot: root,
+      sendPhoto: async (_chatId, _payload, name) => sent.push(name),
+      sendDocument: async (_chatId, _payload, name) => sent.push(name),
+      logger: {
+        log() {},
+        warn(message) { warnings.push(message); },
+        error() {},
+      },
+      sleepMs: 0,
+    });
+
+    expect(sent).toEqual(["summary.md", "diagram.svg"]);
+    expect(warnings).toHaveLength(2);
+    expect(warnings.every((message) => message.includes("安全策略"))).toBe(true);
+    expect(warnings.join("\n")).not.toContain(parent);
+  });
+
+  test("does not read candidates when the turn target is not authorized", async () => {
+    const { root } = makeRelayFixture();
+    const file = join(root, "report.md");
+    writeFileSync(file, "report");
+    let reads = 0;
+
+    await sendCapturedOutputs({
+      chatId: -1001,
+      resultSuccess: true,
+      capturedImages: [],
+      capturedFiles: [{ filePath: file, source: "file_written" }],
+      imageFloodSuppressed: false,
+      allowFileRelay: false,
+      relayRoot: root,
+      sendPhoto: async () => {},
+      sendDocument: async () => {},
+      readFile: () => { reads++; return Buffer.from("unexpected"); },
+      logger: { log() {}, warn() {}, error() {} },
+    });
+
+    expect(reads).toBe(0);
   });
 });
 

@@ -5,6 +5,9 @@ import { basename, dirname, resolve } from "path";
 
 const repoDir = resolve(import.meta.dir, "..");
 const referencePath = resolve(repoDir, "config.example.json");
+const BACKWARD_COMPAT_OPTIONAL_PATHS = new Set([
+  "shared.outputRelayTrustedChatIds",
+]);
 
 function readJson(filePath) {
   return JSON.parse(readFileSync(filePath, "utf8"));
@@ -51,6 +54,7 @@ function compareSchema(filePath, referenceSchema) {
 
   for (const [path, expectedType] of referenceSchema) {
     if (!schema.has(path)) {
+      if (BACKWARD_COMPAT_OPTIONAL_PATHS.has(path)) continue;
       errors.push(`${path}: missing`);
       continue;
     }

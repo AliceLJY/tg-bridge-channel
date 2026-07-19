@@ -10,6 +10,7 @@
     "taskRetentionMinRows": 200,
     "enableGroupSharedContext": true,
     "discussChatIds": [],
+    "outputRelayTrustedChatIds": [],
     "groupContextMaxMessages": 30,
     "groupContextMaxTokens": 3000,
     "groupContextTtlMs": 1200000,

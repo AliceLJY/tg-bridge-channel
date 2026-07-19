@@ -146,9 +146,12 @@ See `config.example.json` for the full schema. Key fields:
 - `ownerTelegramId` — only this user can drive the bot.
 - `backends.<claude|codex|gemini>.telegramBotToken` — bot token per backend.
 - `sharedContextBackend` — `sqlite` or `redis` for cross-bot shared memory.
+- `outputRelayTrustedChatIds` — group chats allowed to receive generated file attachments. Empty by default; even listed groups require the owner to trigger the turn.
 - `a2aEnabled` / `a2aPorts` — enable A2A-TG inter-bot messaging.
 
 ## Security
+
+Automatic file attachments are enabled for owner-triggered private chats. Group attachments are disabled unless the group ID is listed in `outputRelayTrustedChatIds`, and bot-triggered Discuss turns never send local files. Every detected path—whether reported by a tool event or found in model text—must resolve to a regular, non-hidden file inside that turn's working directory. Common credential/config/log names, symlink escapes, the inbound upload directory, unsupported types, and files over 20 MB are rejected before reading.
 
 The `claude --bg` engine runs with `--permission-mode bypassPermissions`, so the bot never stalls on permission prompts. To stop that from meaning "the bot will run anything", every `--bg` worker is launched with an injected `PreToolUse` hook (`scripts/guard-destructive-bash.sh`) that hard-blocks a small set of catastrophic, irreversible Bash commands: recursive deletion of `/`, `~`, `$HOME` or a top-level system directory; `mkfs`; `dd` onto a block device; redirecting onto a block device; fork bombs; and `shred` of a device. Everyday commands — including `rm -rf node_modules` — pass untouched.
 

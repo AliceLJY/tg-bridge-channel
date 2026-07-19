@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -63,6 +63,25 @@ describe("check-configs", () => {
     expect(result.exitCode).toBe(0);
     expect(stdout).toContain("config.example.json");
     expect(`${stdout}\n${stderr}`).not.toContain("replace-me");
+  });
+
+  test("accepts existing configs that predate the optional output relay allowlist", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "telegram-ai-bridge-configs-"));
+    tempDirs.push(dir);
+    const repoDir = import.meta.dir + "/..";
+    const config = await Bun.file(join(repoDir, "config.example.json")).json();
+    delete config.shared.outputRelayTrustedChatIds;
+    const configPath = join(dir, "config-legacy.json");
+    writeFileSync(configPath, JSON.stringify(config));
+
+    const result = Bun.spawnSync({
+      cmd: ["bun", "scripts/check-configs.js", configPath],
+      cwd: repoDir,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(0);
   });
 
   test("rejects sqlite discuss configs that share a chat but use separate shared context dbs", async () => {

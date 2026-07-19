@@ -55,7 +55,7 @@ import { withRetry, classifyError } from "./send-retry.js";
 import { protectFileReferences } from "./file-ref-protect.js";
 import { createStreamingPreview } from "./streaming-preview.js";
 import { markdownToTelegramHTML, hasMarkdownFormatting } from "./markdown-to-tg.js";
-import { extractFilePathsFromText, extractProgressBroadcasts, sanitizeBackendError, sendCapturedOutputs, sendFinalResult, stripProgressBroadcasts } from "./output-relay.js";
+import { extractFilePathsFromText, extractProgressBroadcasts, isAutoFileRelayAllowed, sanitizeBackendError, sendCapturedOutputs, sendFinalResult, stripProgressBroadcasts } from "./output-relay.js";
 import { createTaskFinalizer, finishTurnProgress, saveCapturedSession } from "./turn-state.js";
 import { probeSessionFile } from "./adapters/claude-sessions.js";
 import { createLatePatrolManager } from "./late-patrol.js";
@@ -137,6 +137,12 @@ const REQUESTED_BACKENDS = String(process.env.ENABLED_BACKENDS || AVAILABLE_BACK
 const ENABLE_GROUP_SHARED_CONTEXT = process.env.ENABLE_GROUP_SHARED_CONTEXT !== "false";
 const DISCUSS_CHAT_IDS = new Set(
   String(process.env.DISCUSS_CHAT_IDS || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+);
+const OUTPUT_RELAY_TRUSTED_CHAT_IDS = new Set(
+  String(process.env.OUTPUT_RELAY_TRUSTED_CHAT_IDS || "")
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean)
@@ -1151,6 +1157,13 @@ async function processPrompt(ctx, prompt) {
   const adapter = getAdapter(chatId);
   const backendName = getBackendName(chatId);
   const verboseLevel = verboseSettings.get(chatId) ?? DEFAULT_VERBOSE;
+  const chatCwd = dirManager.current(chatId);
+  const allowFileRelay = isAutoFileRelayAllowed({
+    chat: ctx.chat,
+    from: ctx.from,
+    ownerId: OWNER_ID,
+    trustedChatIds: OUTPUT_RELAY_TRUSTED_CHAT_IDS,
+  });
   const stopKeyboard = new InlineKeyboard().text("⏹ Stop", "stop");
   const progress = createProgressTracker(ctx, chatId, verboseLevel, adapter.label, { replyMarkup: stopKeyboard });
   const { session, effectiveSession } = getEffectiveSession(chatId);
@@ -1192,7 +1205,9 @@ async function processPrompt(ctx, prompt) {
     //     → 走 Claude SDK systemPrompt.append，跨轮不变，享受 Prompt Cache
     //   - 动态层 fullPrompt：群内消息 + 当前用户消息，每轮都变，走 stdin
     // 注意：systemAppend 只在新 session 起效；resume 沿用首次 session 建立时的系统 prompt
-    const bridgeHint = "你通过 Telegram Bridge 与用户对话。当用户要求发送文件、截图或查看图片时：1) 用工具找到/生成文件 2) 在回复中包含文件的完整绝对路径（如 /Users/xxx/file.png），bridge 会自动检测路径并发送给用户。用户不需要知道路径，你来找。绝对不要自己调用 curl/Telegram Bot API。";
+    const bridgeHint = allowFileRelay
+      ? "你通过 Telegram Bridge 与用户对话。当用户要求发送文件、截图或查看图片时：1) 用工具找到/生成文件 2) 在回复中包含文件的完整绝对路径（如 /Users/xxx/file.png），bridge 会在当前工作目录的安全边界内检测并发送合法产物。用户不需要知道路径，你来找。绝对不要自己调用 curl/Telegram Bot API。"
+      : "你通过 Telegram Bridge 与用户对话。当前对话未授权自动回传本机文件；不要为了触发附件回传而输出本机绝对路径，也不要自己调用 curl/Telegram Bot API。";
     const discussHint = activeDiscussMode
       ? buildDiscussExitContractHint({
         botUsername: bot.botInfo?.username,
@@ -1268,7 +1283,6 @@ async function processPrompt(ctx, prompt) {
 
     const modelOverride = getChatModel(chatId);
     const effortOverride = getChatEffort(chatId) || DEFAULT_EFFORT || null;
-    const chatCwd = dirManager.current(chatId);
     const streamOverrides = {
       ...(modelOverride ? { model: modelOverride } : {}),
       ...(effortOverride ? { effort: effortOverride } : {}),
@@ -1494,6 +1508,8 @@ async function processPrompt(ctx, prompt) {
         capturedImages,
         capturedFiles,
         imageFloodSuppressed,
+        allowFileRelay,
+        relayRoot: chatCwd,
         fileDir: FILE_DIR,
         sendPhoto: tgSendPhoto,
         sendDocument: tgSendDocument,

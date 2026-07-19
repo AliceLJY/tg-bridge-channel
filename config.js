@@ -180,6 +180,7 @@ export function createDefaultConfig() {
       taskRetentionMinRows: 200,
       enableGroupSharedContext: true,
       discussChatIds: [],
+      outputRelayTrustedChatIds: [],
       groupContextMaxMessages: 30,
       groupContextMaxTokens: 3000,
       groupContextTtlMs: 1200000,
@@ -338,6 +339,7 @@ function buildEnvFromConfig(config, backend, configPath) {
     ENABLED_BACKENDS: selectedBackend,
     ENABLE_GROUP_SHARED_CONTEXT: String(shared.enableGroupSharedContext ?? true),
     DISCUSS_CHAT_IDS: normalizeChatIdList(shared.discussChatIds).join(","),
+    OUTPUT_RELAY_TRUSTED_CHAT_IDS: normalizeChatIdList(shared.outputRelayTrustedChatIds).join(","),
     GROUP_CONTEXT_MAX_MESSAGES: String(shared.groupContextMaxMessages ?? 30),
     GROUP_CONTEXT_MAX_TOKENS: String(shared.groupContextMaxTokens ?? 3000),
     GROUP_CONTEXT_TTL_MS: String(shared.groupContextTtlMs ?? 1200000),
@@ -449,6 +451,12 @@ export function validateConfig(config, options = {}) {
     pushIssue(issues, "shared.discussChatIds", "must be an array of Telegram chat IDs.");
   } else if (!discussChatIds.every(looksLikeTelegramChatId)) {
     pushIssue(issues, "shared.discussChatIds", "must contain only numeric Telegram chat IDs.");
+  }
+  const outputRelayTrustedChatIds = parseChatIdList(shared.outputRelayTrustedChatIds);
+  if (shared.outputRelayTrustedChatIds != null && !Array.isArray(shared.outputRelayTrustedChatIds)) {
+    pushIssue(issues, "shared.outputRelayTrustedChatIds", "must be an array of Telegram chat IDs.");
+  } else if (!outputRelayTrustedChatIds.every(looksLikeTelegramChatId)) {
+    pushIssue(issues, "shared.outputRelayTrustedChatIds", "must contain only numeric Telegram chat IDs.");
   }
   validatePositiveIntegerField(issues, "shared.groupContextMaxMessages", shared.groupContextMaxMessages);
   validatePositiveIntegerField(issues, "shared.groupContextMaxTokens", shared.groupContextMaxTokens);
@@ -610,6 +618,16 @@ export function validateResolvedEnv(env, options = {}) {
       .every(looksLikeTelegramChatId)
   ) {
     pushIssue(issues, "DISCUSS_CHAT_IDS", "must contain only numeric Telegram chat IDs.");
+  }
+  if (
+    isNonEmptyString(env.OUTPUT_RELAY_TRUSTED_CHAT_IDS)
+    && !String(env.OUTPUT_RELAY_TRUSTED_CHAT_IDS)
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .every(looksLikeTelegramChatId)
+  ) {
+    pushIssue(issues, "OUTPUT_RELAY_TRUSTED_CHAT_IDS", "must contain only numeric Telegram chat IDs.");
   }
 
   if (
