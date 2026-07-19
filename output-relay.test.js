@@ -222,6 +222,65 @@ describe("automatic file relay policy", () => {
 
     expect(reads).toBe(0);
   });
+
+  test("does not decode or send captured images when the turn target is not authorized", async () => {
+    let dataReads = 0;
+    let sends = 0;
+    const image = {
+      get data() {
+        dataReads++;
+        return Buffer.from("private image").toString("base64");
+      },
+      mediaType: "image/png",
+      source: "generated",
+    };
+
+    await sendCapturedOutputs({
+      chatId: -1001,
+      resultSuccess: true,
+      capturedImages: [image],
+      capturedFiles: [],
+      imageFloodSuppressed: false,
+      allowFileRelay: false,
+      relayRoot: "/unused",
+      sendPhoto: async () => { sends++; },
+      sendDocument: async () => {},
+      logger: { log() {}, warn() {}, error() {} },
+    });
+
+    expect(dataReads).toBe(0);
+    expect(sends).toBe(0);
+  });
+
+  test("sends captured images for an authorized turn", async () => {
+    const sent = [];
+    const payload = Buffer.from("generated image");
+
+    await sendCapturedOutputs({
+      chatId: 42,
+      resultSuccess: true,
+      capturedImages: [{
+        data: payload.toString("base64"),
+        mediaType: "image/png",
+        source: "generated",
+      }],
+      capturedFiles: [],
+      imageFloodSuppressed: false,
+      allowFileRelay: true,
+      relayRoot: "/unused",
+      sendPhoto: async (chatId, imagePayload, name) => {
+        sent.push({ chatId, imagePayload, name });
+      },
+      sendDocument: async () => {},
+      logger: { log() {}, warn() {}, error() {} },
+      sleepMs: 0,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].chatId).toBe(42);
+    expect(sent[0].imagePayload).toEqual(payload);
+    expect(sent[0].name).toBe("output.png");
+  });
 });
 
 describe("sanitizeBackendError", () => {

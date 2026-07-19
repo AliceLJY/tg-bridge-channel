@@ -266,7 +266,11 @@ export async function sendCapturedOutputs({
     logger.log(`[Bridge] 输出回传: ${capturedImages.length} 张图片${imageFloodSuppressed ? " (防刷已触发，部分跳过)" : ""}, ${capturedFiles.length} 个文件`);
   }
 
-  if (resultSuccess && capturedImages.length > 0) {
+  if (resultSuccess && capturedImages.length > 0 && !allowFileRelay) {
+    logger.log("[Bridge] 跳过自动图片回传：当前对话未授权");
+  }
+
+  if (resultSuccess && capturedImages.length > 0 && allowFileRelay) {
     let sentImageCount = 0;
     for (const img of capturedImages) {
       if (img.source === "tool_result") {

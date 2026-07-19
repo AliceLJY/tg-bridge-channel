@@ -146,12 +146,12 @@ CLAUDE_POOL_ENGINE=1 bun run start --backend claude --config config.json
 - `ownerTelegramId` —— 只有这个用户能驱动 bot。
 - `backends.<claude|codex|gemini>.telegramBotToken` —— 各后端的 bot token。
 - `sharedContextBackend` —— `sqlite` 或 `redis`，跨 bot 共享记忆。
-- `outputRelayTrustedChatIds` —— 允许接收生成文件附件的群聊。默认空；列入后也只接受 owner 本人触发的 turn。
+- `outputRelayTrustedChatIds` —— 允许接收生成文件和图片附件的群聊。默认空；列入后也只接受 owner 本人触发的 turn。
 - `a2aEnabled` / `a2aPorts` —— 启用 A2A-TG 跨 bot 消息。
 
 ## 安全
 
-自动文件附件默认只用于 owner 触发的私聊。群聊需把 chat ID 明确列入 `outputRelayTrustedChatIds`，并且仍须由 owner 本人触发；bot 触发的 Discuss turn 一律不发送本机文件。工具事件上报和模型文本中识别出的路径共用同一检查：文件必须是当前 turn 工作目录内的非隐藏普通文件；符号链接逃逸、常见凭证/配置/日志名、入站上传目录、不支持的类型及超过 20 MB 的文件都会在读取前被拒绝。
+自动文件和图片附件默认只用于 owner 触发的私聊。群聊需把 chat ID 明确列入 `outputRelayTrustedChatIds`，并且仍须由 owner 本人触发；bot 触发的 Discuss turn 一律不发送附件。工具事件上报和模型文本中识别出的文件路径共用同一检查：文件必须是当前 turn 工作目录内的非隐藏普通文件；符号链接逃逸、常见凭证/配置/日志名、入站上传目录、不支持的类型及超过 20 MB 的文件都会在读取前被拒绝。内存图片继续使用原有的 10 MB 限制。
 
 `claude --bg` 引擎以 `--permission-mode bypassPermissions` 运行,bot 因此不会卡在权限确认上。为了不让它变成"bot 什么都敢跑",每个 `--bg` worker 启动时都会注入一个 `PreToolUse` 钩子(`scripts/guard-destructive-bash.sh`),硬拦一小撮灾难性、不可逆的 Bash 命令:递归删除 `/`、`~`、`$HOME` 或一级系统目录;`mkfs`;`dd` 写块设备;重定向覆写块设备;fork 炸弹;以及 `shred` 擦除设备。日常命令——包括 `rm -rf node_modules`——一律放行。
 
