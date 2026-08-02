@@ -50,7 +50,7 @@ import { createCostGuard } from "./cost-guard.js";
 import { createDirManager } from "./dir-manager.js";
 import { createIdleMonitor } from "./idle-monitor.js";
 import { createCronManager } from "./cron.js";
-import { runHealthCheck } from "./doctor.js";
+import { evaluateStartupSelfCheckResult, runHealthCheck } from "./doctor.js";
 import { withRetry, classifyError } from "./send-retry.js";
 import { protectFileReferences } from "./file-ref-protect.js";
 import { createStreamingPreview } from "./streaming-preview.js";
@@ -2077,13 +2077,15 @@ if (DEFAULT_BACKEND === "claude" && SELF_CHECK_ENGINE && process.env.POOL_SELF_C
       })) {
         if (ev.type === "result") { ok = ev.success; text = ev.text || ""; }
       }
-      if (!ok) throw new Error(text.slice(0, 200) || "result success=false");
+      const selfCheck = evaluateStartupSelfCheckResult({ success: ok, text });
+      if (!selfCheck.ok) throw new Error(selfCheck.error);
+      text = selfCheck.text;
       console.log(`[self-check] ${SELF_CHECK_ENGINE} 链路 OK（${Math.round((Date.now() - t0) / 1000)}s）: ${text.replace(/\s+/g, " ").slice(0, 40)}`);
     } catch (e) {
       console.error(`[self-check] ${SELF_CHECK_ENGINE} 链路 FAILED: ${e.message}`);
       await bot.api.sendMessage(
         OWNER_ID,
-        `🚨 启动自检失败：--bg 引擎链路不通（${e.message.slice(0, 150)}）。\n多半是 Claude Code 升级改了行为，bot 可能无法正常回复，需要人工排查（/doctor 看版本信息）。`
+        `🚨 启动自检失败：--bg 引擎没有返回 pong（${e.message.slice(0, 150)}）。\n后台回复链路、认证或网络状态异常，bot 可能无法正常回复；可先用 /doctor 查看本机状态。`
       ).catch(() => {});
     }
   }, 15000);

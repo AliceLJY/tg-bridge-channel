@@ -1,8 +1,33 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildClaudeContractLines, runHealthCheck } from "./doctor.js";
+import {
+  buildClaudeContractLines,
+  evaluateStartupSelfCheckResult,
+  runHealthCheck,
+} from "./doctor.js";
 
 describe("doctor", () => {
+  test("startup self-check only accepts a successful pong result", () => {
+    expect(evaluateStartupSelfCheckResult({ success: true, text: "  pong\n" })).toEqual({
+      ok: true,
+      text: "pong",
+      error: "",
+    });
+
+    expect(evaluateStartupSelfCheckResult({
+      success: true,
+      text: "Please run /login · API Error: 403 Request not allowed",
+    })).toMatchObject({ ok: false });
+
+    expect(evaluateStartupSelfCheckResult({ success: true, text: "ready" })).toMatchObject({
+      ok: false,
+    });
+
+    expect(evaluateStartupSelfCheckResult({ success: false, text: "pong" })).toMatchObject({
+      ok: false,
+    });
+  });
+
   test("reads A2A received count from loopGuard stats", async () => {
     const report = await runHealthCheck({
       a2aBus: {

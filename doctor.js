@@ -56,6 +56,25 @@ function isNonEmptyRegularFile(path) {
   }
 }
 
+export function evaluateStartupSelfCheckResult({ success, text } = {}) {
+  const response = typeof text === "string" ? text.trim() : "";
+  if (success !== true) {
+    return {
+      ok: false,
+      text: response,
+      error: response.slice(0, 200) || "result success=false",
+    };
+  }
+  if (response.toLowerCase() !== "pong") {
+    return {
+      ok: false,
+      text: response,
+      error: `unexpected self-check response: ${response.slice(0, 160) || "(empty)"}`,
+    };
+  }
+  return { ok: true, text: response, error: "" };
+}
+
 export function buildClaudeContractLines({
   env = process.env,
   cliHelp,
