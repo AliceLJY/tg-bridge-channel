@@ -24,7 +24,7 @@
 - **Parallel sessions** — N independent bots in one group, each its own session, with shared context (SQLite/Redis).
 - **Heterogeneous multi-agent collaboration** _(experimental, disabled by default — set `a2aEnabled` to opt in)_ — Claude, Codex, and Gemini bots talking to each other in a group via the A2A-TG envelope protocol, with generation-counted loop suppression.
 
-The **primary, battle-tested path** is single-agent private-chat control of Claude Code via the pool engine below. Parallel sessions and A2A collaboration work but are experimental; the Gemini backend and the `local-agent` executor are compatibility layers that see far less real-world use.
+The **primary, battle-tested path** is single-agent private-chat control of Claude Code via the reply engine below (the pool engine held that role until June 2026 and is kept as the rollback path). Parallel sessions and A2A collaboration work but are experimental; the Gemini backend and the `local-agent` executor are compatibility layers that see far less real-world use.
 
 ## Architecture
 
@@ -85,20 +85,36 @@ The `claude` backend ships four engine implementations. Environment-variable pri
 | Mode | Implementation | How it works | Status |
 |---|---|---|---|
 | default | `adapters/claude.js` | Programmatic adapter built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-sdk). | Fallback / API-billed path |
-| `CLAUDE_POOL_ENGINE=1` | `adapters/cli-pool-adapter.js` | Per-**turn** `claude --bg [--resume]` workers; output is tailed from the forked transcript. | Primary owner-used CLI path |
-| `CLAUDE_PRINT_ENGINE=1` | `adapters/cli-print-adapter.js` | `claude --print --output-format stream-json [--resume]`; no daemon reply socket. | Experimental |
-| `CLAUDE_REPLY_ENGINE=1` | `adapters/cli-reply-adapter.js` | Persistent `claude --bg` worker plus an authenticated local daemon `op:reply`. | Experimental; highest upgrade coupling |
+| `CLAUDE_POOL_ENGINE=1` | `adapters/cli-pool-adapter.js` | Per-**turn** `claude --bg [--resume]` workers; output is tailed from the forked transcript. | Superseded by reply; kept as rollback path |
+| `CLAUDE_PRINT_ENGINE=1` | `adapters/cli-print-adapter.js` | `claude --print --output-format stream-json [--resume]`; no daemon reply socket. | Superseded by reply; headless, so no remote control |
+| `CLAUDE_REPLY_ENGINE=1` | `adapters/cli-reply-adapter.js` | Persistent `claude --bg` worker plus an authenticated local daemon `op:reply`. | **Primary owner-used CLI path** since June 2026; highest upgrade coupling |
 
-The pool engine spawns one short-lived `claude --bg` worker **per turn**: each inbound Telegram message launches `claude --bg [--resume <session-id>] "<prompt>"`, which forks a new session inheriting the full conversation history, streams the reply back by tailing the forked session's local transcript file, and stops the worker when the turn completes. The bridge persists the forked session id per chat and resumes it on the next message, so the conversation stays continuous across turns. Per-chat `/model`, `/effort` and `/dir` preferences plus the bridge's system-prompt scaffold are passed to every spawn as plain CLI flags.
+### Why three CLI engines, and why reply won
 
-Two practical caveats of the fork-per-turn design:
+Each earlier engine solved half the problem:
 
-- **Quota grows with conversation length.** Every turn re-forks the full history, so very long conversations consume subscription usage superlinearly. Start a fresh session (`/new`) when switching topics.
-- **Silence isn't a hang, and a timeout doesn't kill the task.** When a long-running task goes quiet for more than `CLI_POOL_HEARTBEAT_MS` (default 3 min), the bridge keeps emitting a "still running" heartbeat instead of declaring failure; only when the turn's total duration exceeds `CLI_POOL_HARD_LIMIT_MS` (default 60 min) does it report a hard timeout — and even then it deliberately leaves the worker running, so its output keeps landing in the session transcript and your next message forks from that same session and inherits everything written in the meantime. Normal completion and the Stop button still stop the worker immediately.
+| Engine | One session per chat? | Reachable by Claude's remote control? | Blocker |
+|---|---|---|---|
+| pool | No — `--bg --resume` forks a **new session id every turn** | Yes (worker has a PTY) | Every turn leaves another `tg-turn-*` transcript behind |
+| print | Yes — `--print --resume` appends in place | No — headless, no TTY | Never enters the daemon's remote-control roster |
+| **reply** | Yes | Yes | — |
+
+Claude's remote control needs a TTY plus a resident process, so "don't fork" and "stay reachable from the phone app" were mutually exclusive until the reply engine.
+
+**The reply engine** keeps **one persistent `claude --bg` worker per chat**. The first message spawns it; every later message is delivered into that same session through an authenticated local daemon `op:reply`, so no fork occurs and only one transcript file exists per chat. If the daemon has idle-reclaimed the worker (or the bridge restarted), the next message revives the session with `--bg --resume <session-id>` — that path *does* fork once, but only after an idle gap, not on every turn. Output is read by tailing the same transcript from a recorded offset.
+
+**The pool engine** (previous generation, still the rollback path — and the reply engine reuses its `buildTurnArgs` / transcript tailing / roster helpers) spawns one short-lived `claude --bg` worker **per turn**: each inbound Telegram message launches `claude --bg [--resume <session-id>] "<prompt>"`, which forks a new session inheriting the full conversation history, streams the reply back by tailing the forked session's local transcript file, and stops the worker when the turn completes. The bridge persists the forked session id per chat and resumes it on the next message, so the conversation stays continuous across turns. In all engines, per-chat `/model`, `/effort` and `/dir` preferences plus the bridge's system-prompt scaffold are passed to every spawn as plain CLI flags.
+
+Two practical caveats:
+
+- **Quota grows with conversation length — fork-per-turn (pool) only.** Every turn re-forks the full history, so very long conversations consume subscription usage superlinearly. Start a fresh session (`/new`) when switching topics. The reply engine does not re-send history per turn and is not affected.
+- **Silence isn't a hang, and a timeout doesn't kill the task — all CLI engines.** When a long-running task goes quiet for more than `CLI_POOL_HEARTBEAT_MS` (default 3 min), the bridge keeps emitting a "still running" heartbeat instead of declaring failure; only when the turn's total duration exceeds `CLI_POOL_HARD_LIMIT_MS` (default 60 min) does it report a hard timeout — and even then it deliberately leaves the worker running, so its output keeps landing in the session transcript and your next message inherits everything written in the meantime. Normal completion and the Stop button still stop the worker immediately.
+
+Reply-specific tunables: `CLI_REPLY_ROSTER_WAIT_MS` (default 30 s) is how long a revived session waits for the daemon to register the new session id — large conversations must load their full history before that id appears, and a value that is too low makes the bridge silently fall back to a *new* session and lose context. `CLI_REPLY_ECHO_GRACE_MS` (default 90 s) bounds the watchdog for an `op:reply` that was accepted but never produced output.
 
 The backend name stays `claude` in all four modes, so all orchestration (`backendName === "claude"` checks for approval / labels / A2A / cron) is unchanged. Switching engines is a per-process environment variable; rolling back is removing it.
 
-> The pool engine invokes documented Claude CLI commands, but reply discovery and completion detection also depend on **observed local implementation contracts**: the `backgrounded · <short-id>` stdout line, `~/.claude/daemon/roster.json`, `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`, user/assistant record shapes, and either visible-text `end_turn` or `system.turn_duration`. These are not a stable public API. A Claude Code upgrade can therefore break the bridge even when `claude --bg` itself still exists.
+> All three CLI engines invoke documented Claude CLI commands, but reply discovery and completion detection also depend on **observed local implementation contracts**: the `backgrounded · <short-id>` stdout line, `~/.claude/daemon/roster.json`, `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`, user/assistant record shapes, and either visible-text `end_turn` or `system.turn_duration`. The reply engine additionally depends on the daemon's `control.sock`, its `control.key` authentication, and the `op:reply` protocol itself. None of these is a stable public API. A Claude Code upgrade can therefore break the bridge even when `claude --bg` itself still exists — which is exactly why pool and print are kept rather than deleted.
 
 > An earlier interactive channel-plugin engine (`CLAUDE_CHANNEL_ENGINE=1`) used a local Model Context Protocol server modeled on Claude Code's built-in fakechat channel. It was removed in May 2026 in favor of the Agent View based pool engine; see git history before May 2026 for the channel-plugin engine implementation.
 
@@ -109,7 +125,7 @@ The backend name stays `claude` in all four modes, so all orchestration (`backen
 | SDK | Published Agent SDK event stream | Local transcripts are consulted for session discovery and resume-noise repair | SDK version pin and regression tests |
 | print | `--print`, `--resume`, `--output-format stream-json`, `--settings` | Exact stream-json message/result shapes and local persisted sessions | Synthetic event/result fixtures; no direct roster/socket contract |
 | pool | `--bg`, `--resume`, `claude stop`, `--settings` | Background stdout short ID, daemon roster schema, transcript path/records, two turn-end forms | Synthetic roster/transcript fixtures plus optional live startup self-check |
-| reply | The same background CLI commands | Everything in pool, plus `control.sock`, a non-empty `control.key` file, and the daemon `op:reply` protocol | Experimental; expect breakage when daemon internals change |
+| reply | The same background CLI commands | Everything in pool, plus `control.sock`, a non-empty `control.key` file, and the daemon `op:reply` protocol | In daily use, but the widest internal surface here — expect breakage when daemon internals change, and keep pool/print as fallbacks |
 
 The last **static** compatibility check in this repository was against Claude Code **2.1.211 on 2026-07-17**. That means the required CLI help surfaces were present and the synthetic contract fixtures matched the parser; it is not a promise that all future Claude Code versions work.
 
@@ -129,7 +145,13 @@ cp config.example.json config.json
 bun run start --backend claude --config config.json
 ```
 
-To run the **pool engine** (recommended; subscription-billed background sessions):
+To run the **reply engine** (recommended; subscription-billed background sessions, one persistent session per chat, reachable from Claude's remote control):
+
+```bash
+CLAUDE_REPLY_ENGINE=1 bun run start --backend claude --config config.json
+```
+
+If the daemon's `op:reply` protocol breaks after a Claude Code upgrade, fall back to the pool engine — same billing path, at the cost of one forked transcript per turn:
 
 ```bash
 CLAUDE_POOL_ENGINE=1 bun run start --backend claude --config config.json
