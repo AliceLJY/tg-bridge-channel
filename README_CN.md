@@ -127,11 +127,15 @@ reply 独有的可调项：`CLI_REPLY_ROSTER_WAIT_MS`（默认 30 秒）是复�
 | pool | `--bg`、`--resume`、`claude stop`、`--settings` | 背景启动 stdout short id、daemon roster schema、会话记录路径/事件、两种 turn 结束形态 | 合成 roster/JSONL fixture，加可选的启动实测 |
 | reply | 同一组背景 CLI 命令 | pool 的全部本地契约，再加 `control.sock`、非空 `control.key` 文件和 daemon `op:reply` 协议 | 日常在用，但内部依赖面最广——daemon 内部结构变化时预期会坏，故保留 pool / print 作回退 |
 
-本仓最后一次**静态**兼容检查对应 Claude Code **2.1.211（2026-07-17）**。它只表示当时所需 CLI help 表面存在、合成本地契约 fixture 与解析器一致，不代表承诺未来所有 Claude Code 版本都可用。
+bridge **不会捆绑或自动升级 Claude Code**。CLI 引擎读取 `CLAUDE_CLI_PATH`，未配置时使用 `~/.local/bin/claude`，实际安装哪个版本由运行者控制。
+
+2026-07-17 建立的合成本地契约 fixture 已于 **2026-08-13** 在 Claude Code **2.1.229** 上重新运行；发版准备时它也是 npm 的 `latest`。这只确认所需 CLI help 表面仍存在、fixture 与解析器仍一致，不代表承诺未来每个 Claude Code 版本都可用。
 
 `/doctor` 对当前选中引擎做无副作用的结构检查：所需 flag、roster 形态、会话目录是否存在；reply 模式还只检查 `control.key` 是否为非空普通文件，绝不读取或输出其内容。CLI 引擎启用时，延迟启动自检才是动态端到端检查（`spawn → roster/stream → transcript/result → stop`）；它会消耗一次很小的 Claude turn，可用 `POOL_SELF_CHECK=0` 关闭。
 
 ## 快速开始
+
+Claude Code 需独立安装，不包含在本包内。使用 Claude CLI 引擎时，请安装当前版本、用 `claude --version` 确认，并在升级现有 bridge 前核对上面的兼容边界。
 
 ```bash
 # 1. 安装依赖

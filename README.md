@@ -127,11 +127,15 @@ The backend name stays `claude` in all four modes, so all orchestration (`backen
 | pool | `--bg`, `--resume`, `claude stop`, `--settings` | Background stdout short ID, daemon roster schema, transcript path/records, two turn-end forms | Synthetic roster/transcript fixtures plus optional live startup self-check |
 | reply | The same background CLI commands | Everything in pool, plus `control.sock`, a non-empty `control.key` file, and the daemon `op:reply` protocol | In daily use, but the widest internal surface here — expect breakage when daemon internals change, and keep pool/print as fallbacks |
 
-The last **static** compatibility check in this repository was against Claude Code **2.1.211 on 2026-07-17**. That means the required CLI help surfaces were present and the synthetic contract fixtures matched the parser; it is not a promise that all future Claude Code versions work.
+The bridge does **not** bundle or auto-update Claude Code. CLI engines resolve `CLAUDE_CLI_PATH`, defaulting to `~/.local/bin/claude`, so the operator controls the installed version.
+
+The synthetic local-contract fixtures dated 2026-07-17 were re-run against Claude Code **2.1.229 on 2026-08-13**; that version was also npm's `latest` at release-preparation time. This confirms that the required CLI help surfaces were present and the fixtures still matched the parser. It is not a promise that every future Claude Code release will work.
 
 `/doctor` performs a non-invasive structural check for the selected engine. It checks required flags, roster shape, transcript-directory presence, and—only for reply mode—whether `control.key` is a non-empty regular file; it never reads or prints the key. For enabled CLI engines, the delayed startup self-check is the live end-to-end check (`spawn → roster/stream → transcript/result → stop`). It consumes a small Claude turn and can be disabled with `POOL_SELF_CHECK=0`.
 
 ## Quick start
+
+Claude Code is installed separately from this package. For a Claude CLI engine, install a current Claude Code release, verify it with `claude --version`, and check the compatibility boundary above before upgrading an existing bridge.
 
 ```bash
 # 1. install dependencies
