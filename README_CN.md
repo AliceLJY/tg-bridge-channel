@@ -4,7 +4,7 @@
 
 **自托管的 Telegram AI 编程代理桥 —— 聊天窗口就是终端。**
 
-*在 Telegram 聊天里通过 SDK 或本地 CLI 引擎驱动 Claude Code / Codex / Gemini，并通过 A2A-TG 信封协议支持群聊内多代理协作。*
+*在 Telegram 聊天里通过 SDK 或本地 CLI 引擎驱动 Claude Code / Codex，并通过 A2A-TG 信封协议支持群聊内多代理协作。*
 
 [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Bun](https://img.shields.io/badge/Runtime-Bun-f9f1e1?logo=bun)](https://bun.sh)
@@ -20,11 +20,26 @@
 
 `tg-bridge-channel` 把 AI 编程代理跑成 Telegram bot。每个 bot 是一个完整的代理会话，你从手机或桌面跟它对话 —— 聊天窗口就是终端。支持三种模式：
 
-- **单代理控制** —— 每个 bot 一个 Claude Code / Codex / Gemini 会话，通过 Telegram 驱动。
+- **单代理控制** —— 每个 bot 一个 Claude Code / Codex 会话，通过 Telegram 驱动。
 - **并行会话** —— 一个群里跑 N 个独立 bot，各自独立会话，带共享上下文（SQLite/Redis）。
-- **异构多代理协作**（实验性，默认关闭，需置 `a2aEnabled` 开启）—— Claude、Codex、Gemini bot 在群里通过 A2A-TG 信封协议互相对话，带基于代际计数的环路抑制。
+- **异构多代理协作**（实验性，默认关闭，需置 `a2aEnabled` 开启）—— Claude、Codex bot 在群里通过 A2A-TG 信封协议互相对话，带基于代际计数的环路抑制。
 
-**主路径**（经过日常实际使用打磨的部分）是私聊单代理控制 Claude Code + 下方的 reply 引擎（2026 年 6 月之前这个位置是 pool 引擎，现保留作回滚路径）。并行会话和 A2A 协作可用但属实验性质；Gemini 后端和 `local-agent` 执行器是兼容层，实际使用频率低得多。
+**主路径**（经过日常实际使用打磨的部分）是私聊单代理控制 Claude Code + 下方的 reply 引擎（2026 年 6 月之前这个位置是 pool 引擎，现保留作回滚路径）。并行会话和 A2A 协作可用但属实验性质；`local-agent` 执行器是兼容层，实际使用频率低得多。Gemini 后端对个人账号已停用——见下方说明。
+
+> **关于 `gemini` 后端——个人账号请不要使用。**
+>
+> 该适配器调用 Code Assist 内部端点 `cloudcode-pa.googleapis.com`，OAuth token
+> 读自 `~/.gemini/oauth_creds.json`，而那个文件由独立的 `gemini` CLI 登录写入。
+> Google 已于 2026-06-18 对个人账号（免费 / AI Pro / AI Ultra）停止该 CLI 服务，
+> 文件不再产生，这个后端也就无法完成认证。继任者 Antigravity CLI（`agy`）
+> 不会写出可直接替代的凭证文件。
+>
+> Google 另有明确表态：第三方软件使用 Gemini CLI 的 OAuth 凭证属于违反政策的用法，
+> 可能触发滥用检测或账号限制——所以不要把以这种方式获取的凭证喂给该后端。
+> 适配器与 `backends.gemini.*` 配置项保留，是给通过自身受支持路径认证的
+> Code Assist Standard/Enterprise 部署使用的。
+>
+> Claude 与 Codex 后端不受影响。
 
 ## 架构
 

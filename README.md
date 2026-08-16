@@ -4,7 +4,7 @@
 
 **Self-hosted Telegram bridge for AI coding agents — the chat IS the terminal.**
 
-*Drive Claude Code / Codex / Gemini from a Telegram chat through SDK or local CLI engines, with the A2A-TG envelope protocol for multi-agent collaboration in group chats.*
+*Drive Claude Code / Codex from a Telegram chat through SDK or local CLI engines, with the A2A-TG envelope protocol for multi-agent collaboration in group chats.*
 
 [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Bun](https://img.shields.io/badge/Runtime-Bun-f9f1e1?logo=bun)](https://bun.sh)
@@ -20,11 +20,28 @@
 
 `tg-bridge-channel` runs AI coding agents as Telegram bots. Each bot is a full agent session you talk to from your phone or desktop — the chat *is* the terminal. It supports three modes:
 
-- **Single-agent control** — one Claude Code / Codex / Gemini session per bot, driven over Telegram.
+- **Single-agent control** — one Claude Code / Codex session per bot, driven over Telegram.
 - **Parallel sessions** — N independent bots in one group, each its own session, with shared context (SQLite/Redis).
-- **Heterogeneous multi-agent collaboration** _(experimental, disabled by default — set `a2aEnabled` to opt in)_ — Claude, Codex, and Gemini bots talking to each other in a group via the A2A-TG envelope protocol, with generation-counted loop suppression.
+- **Heterogeneous multi-agent collaboration** _(experimental, disabled by default — set `a2aEnabled` to opt in)_ — Claude and Codex bots talking to each other in a group via the A2A-TG envelope protocol, with generation-counted loop suppression.
 
-The **primary, battle-tested path** is single-agent private-chat control of Claude Code via the reply engine below (the pool engine held that role until June 2026 and is kept as the rollback path). Parallel sessions and A2A collaboration work but are experimental; the Gemini backend and the `local-agent` executor are compatibility layers that see far less real-world use.
+The **primary, battle-tested path** is single-agent private-chat control of Claude Code via the reply engine below (the pool engine held that role until June 2026 and is kept as the rollback path). Parallel sessions and A2A collaboration work but are experimental; the `local-agent` executor is a compatibility layer that sees far less real-world use. The `gemini` backend is retired for personal accounts — see the note below.
+
+> **On the `gemini` backend — do not use it on a personal account.**
+>
+> That adapter calls the internal Code Assist endpoint `cloudcode-pa.googleapis.com`
+> and reads its OAuth token from `~/.gemini/oauth_creds.json`, a file written by the
+> standalone `gemini` CLI login. Google retired that CLI for personal accounts
+> (free, AI Pro, AI Ultra) on 2026-06-18, so the file is no longer produced and the
+> backend cannot authenticate. The successor Antigravity CLI (`agy`) does not write a
+> drop-in replacement.
+>
+> Google has also stated that using Gemini CLI OAuth credentials from third-party
+> software is a policy-violating use case that may trigger abuse detection or account
+> restrictions — so do not feed this backend credentials obtained that way. The
+> adapter and its `backends.gemini.*` config keys are kept for Code Assist
+> Standard/Enterprise deployments authenticating through their own supported path.
+>
+> Claude and Codex backends are unaffected.
 
 ## Architecture
 
@@ -200,7 +217,7 @@ bun run check:claude-contract
 
 - [telegram-ai-bridge](https://github.com/AliceLJY/telegram-ai-bridge) — original Telegram bridge using A2A-TG protocol
 - [wechat-ai-bridge](https://github.com/AliceLJY/wechat-ai-bridge) — same idea on WeChat
-- [recallnest](https://github.com/AliceLJY/recallnest) — shared memory MCP across Claude/Codex/Gemini
+- [recallnest](https://github.com/AliceLJY/recallnest) — shared memory MCP across Claude Code, Codex, Kimi and Antigravity
 
 ## License
 
