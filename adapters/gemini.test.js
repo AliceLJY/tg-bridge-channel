@@ -17,13 +17,17 @@ afterEach(() => {
 });
 
 describe("Gemini adapter", () => {
-  test("listSessions returns an empty array when local session files are absent", async () => {
-    const home = mkdtempSync(join(tmpdir(), "telegram-ai-bridge-gemini-"));
+  test("is disabled: creating it throws with the account-safety reason", () => {
+    const home = mkdtempSync(join(tmpdir(), "tg-bridge-channel-gemini-"));
     tempDirs.push(home);
     process.env.HOME = home;
 
-    const adapter = createAdapter();
+    expect(() => createAdapter()).toThrow(/piggybacks on Gemini CLI OAuth/);
+    expect(() => createAdapter()).toThrow(/geminicli\.com\/docs\/resources\/faq/);
+  });
 
-    expect(await adapter.listSessions()).toEqual([]);
+  test("the disabled reason names agy and API keys as the supported paths", () => {
+    expect(() => createAdapter()).toThrow(/agy/);
+    expect(() => createAdapter()).toThrow(/Vertex AI/);
   });
 });

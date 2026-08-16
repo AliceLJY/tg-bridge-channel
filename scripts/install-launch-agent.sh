@@ -21,7 +21,7 @@ Usage:
   ./scripts/install-launch-agent.sh [options]
 
 Options:
-  --backend <name>   claude | codex | gemini
+  --backend <name>   claude | codex   (gemini: disabled)
   --instance <name>  instance suffix, e.g. 2 -> com.telegram-ai-bridge-2
   --config <path>    config file path passed to start.js
   --label <label>    launchd label override
