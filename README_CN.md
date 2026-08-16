@@ -26,18 +26,23 @@
 
 **主路径**（经过日常实际使用打磨的部分）是私聊单代理控制 Claude Code + 下方的 reply 引擎（2026 年 6 月之前这个位置是 pool 引擎，现保留作回滚路径）。并行会话和 A2A 协作可用但属实验性质；`local-agent` 执行器是兼容层，实际使用频率低得多。Gemini 后端对个人账号已停用——见下方说明。
 
-> **关于 `gemini` 后端——个人账号请不要使用。**
+> **请不要使用 `gemini` 后端。这是账号安全问题，不只是功能失效。**
 >
-> 该适配器调用 Code Assist 内部端点 `cloudcode-pa.googleapis.com`，OAuth token
-> 读自 `~/.gemini/oauth_creds.json`，而那个文件由独立的 `gemini` CLI 登录写入。
-> Google 已于 2026-06-18 对个人账号（免费 / AI Pro / AI Ultra）停止该 CLI 服务，
-> 文件不再产生，这个后端也就无法完成认证。继任者 Antigravity CLI（`agy`）
-> 不会写出可直接替代的凭证文件。
+> 该适配器读取 `~/.gemini/oauth_creds.json`，复用 Gemini CLI 自己的 OAuth client
+> 去访问 Code Assist 内部端点 `cloudcode-pa.googleapis.com`。Google 官方 FAQ 点的
+> 正是这种用法：*"Using third-party software, tools, or services to harvest or piggyback
+> on Gemini CLI's OAuth authentication to access our backend services is a direct
+> violation of our applicable terms and policies"*，并称其 *"may be grounds for immediate
+> suspension or termination of your account"*（可构成立即暂停或终止账号的理由）。
+> 已有付费订阅用户因此失去访问权限的报告。**这与套餐等级无关——被禁的是这个机制本身，
+> 不是账号类型。**
 >
-> Google 另有明确表态：第三方软件使用 Gemini CLI 的 OAuth 凭证属于违反政策的用法，
-> 可能触发滥用检测或账号限制——所以不要把以这种方式获取的凭证喂给该后端。
-> 适配器与 `backends.gemini.*` 配置项保留，是给通过自身受支持路径认证的
-> Code Assist Standard/Enterprise 部署使用的。
+> 另外，Google 已于 2026-06-18 对个人账号停止独立 `gemini` CLI 服务，
+> `oauth_creds.json` 不再产生，该后端在个人账号上也已无法完成认证。
+> 继任者 Antigravity CLI（`agy`）不会写出可直接替代的凭证文件。
+>
+> 第三方软件访问 Gemini 模型的受支持方式是 **Vertex AI 或 Google AI Studio API key**。
+> `backends.gemini.*` 配置项保留只为让既有配置能解析，不要把 CLI 的 OAuth 凭证填进去。
 >
 > Claude 与 Codex 后端不受影响。
 
