@@ -252,6 +252,17 @@ export class JsonlTailReader {
             yield { type: "user_echo", text };
           }
           // 其余 user(tool_result 列表 / 别人 peek 注入)忽略,不影响归属
+        } else if (t === "queue-operation" && !userEchoSeen) {
+          // 中途吸收归属(2026-09-02,案例 3c20e1ef「要」):CC 2.1.25x 起(本机首见 08-26),turn 进行中送达的
+          // op:reply 会被【吸收进当前 turn】——jsonl 只写 queue-operation enqueue + remove(reason=absorbed_mid_turn),
+          // 不再出现 user 行。归属门若只认 user 行,就在 90s 后误报 ECHO_TIMEOUT(用户看到"没递到"、实际 CC 已在处理),
+          // 且本轮后续产出全部不回传。该记录自带原文 content,与 expectUserText 逐字相等才认——不放宽到 enqueue
+          // (只是排队,dequeue 后必有 user 行走上面分支),也不认内容不符的 remove(别的窗口/别的消息)。
+          if (d.operation === "remove" && d.reason === "absorbed_mid_turn" && expectUserText
+              && typeof d.content === "string" && d.content === expectUserText) {
+            userEchoSeen = true;
+            yield { type: "user_echo", text: d.content, absorbed: true };
+          }
         } else if (t === "assistant" && userEchoSeen) {
           const c = d.message?.content;
           let sawText = false;

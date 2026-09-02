@@ -60,6 +60,41 @@ describe("JsonlTailReader.readUntilTurnEnd", () => {
     expect(err?.message).not.toMatch(/ECHO_TIMEOUT/);
   });
 
+  // ── 2026-09-02 中途吸收归属(案例 3c20e1ef「要」):CC 2.1.25x 起 turn 进行中送达的 op:reply 不再写 user 行,
+  //    只写 queue-operation enqueue + remove(reason=absorbed_mid_turn)。归属门只认 user 行 → 90s 误报 ECHO_TIMEOUT
+  //    且本轮后续产出全部不回传。真实 jsonl 形态照抄自该会话第 682/683 行。
+  test("absorbed_mid_turn 记录(content 逐字相等)算 user echo:不误报 ECHO_TIMEOUT,后续 assistant 正常回传", async () => {
+    const spawnAt = Date.parse("2026-09-02T11:59:05.000Z");
+    writeFileSync(path, [
+      J({ type: "queue-operation", operation: "enqueue", timestamp: "2026-09-02T11:59:05.756Z", sessionId: "3c20e1ef", content: "要" }),
+      J({ type: "queue-operation", operation: "remove", timestamp: "2026-09-02T11:59:09.015Z", sessionId: "3c20e1ef", content: "要", reason: "absorbed_mid_turn" }),
+      J({ type: "assistant", message: { content: [{ type: "text", text: "她要重跑。先退出 worktree" }] }, timestamp: "2026-09-02T11:59:25.000Z" }),
+      J({ type: "system", subtype: "turn_duration", durationMs: 7, timestamp: "2026-09-02T12:09:04.000Z" }),
+    ].join("\n") + "\n");
+    const reader = new JsonlTailReader(path);
+    const events = [];
+    for await (const ev of reader.readUntilTurnEnd({ expectUserText: "要", spawnStartedAt: spawnAt, echoGraceMs: 100, pollMs: 5, heartbeatMs: 5000, hardLimitMs: 2000 })) events.push(ev);
+    expect(events.some(e => e.type === "user_echo" && e.absorbed === true && e.text === "要")).toBe(true);
+    expect(events.some(e => e.type === "text" && e.text === "她要重跑。先退出 worktree")).toBe(true);
+    expect(events[events.length - 1]).toMatchObject({ type: "turn_end", durationMs: 7 });
+  });
+
+  test("只有 enqueue、或 content 不符的 remove,不开闸(仍走 ECHO_TIMEOUT,不放宽归属)", async () => {
+    const spawnAt = Date.parse("2026-09-02T11:59:05.000Z");
+    writeFileSync(path, [
+      J({ type: "queue-operation", operation: "enqueue", timestamp: "2026-09-02T11:59:05.756Z", sessionId: "3c20e1ef", content: "要" }),
+      J({ type: "queue-operation", operation: "remove", timestamp: "2026-09-02T11:59:09.015Z", sessionId: "3c20e1ef", content: "别的窗口的消息", reason: "absorbed_mid_turn" }),
+      J({ type: "assistant", message: { content: [{ type: "text", text: "leaked" }] }, timestamp: "2026-09-02T11:59:25.000Z" }),
+    ].join("\n") + "\n");
+    const reader = new JsonlTailReader(path);
+    const texts = []; let err;
+    try {
+      for await (const ev of reader.readUntilTurnEnd({ expectUserText: "要", spawnStartedAt: spawnAt, echoGraceMs: 120, pollMs: 10, heartbeatMs: 5000, hardLimitMs: 10000 })) { if (ev.type === "text") texts.push(ev.text); }
+    } catch (e) { err = e; }
+    expect(err?.message).toMatch(/ECHO_TIMEOUT/);
+    expect(texts).toEqual([]);  // 归属没开,别人的产出不泄漏
+  });
+
   test("忽略不匹配 user echo 的 assistant 块(防 peek 注入串台)", async () => {
     writeFileSync(path, [
       J({ type: "user", message: { content: "SOMEONE ELSE" } }),
