@@ -195,6 +195,7 @@ See `config.example.json` for the full schema. Key fields:
 - `backends.<claude|codex|gemini>.telegramBotToken` — bot token per backend.
 - `sharedContextBackend` — `sqlite` or `redis` for cross-bot shared memory.
 - `outputRelayTrustedChatIds` — group chats allowed to receive generated file and image attachments. Empty by default; even listed groups require the owner to trigger the turn.
+- `historyBots` — backend → primary bot username, e.g. `{ "claude": "@your_claude_bot" }`. Secondary bots (started without `BRIDGE_OWNER=true`) hide `/sessions` and `/resume` and use this to tell the user which bot holds the history; unset, they just say "another bot".
 - `a2aEnabled` / `a2aPorts` — enable A2A-TG inter-bot messaging.
 
 ## Security

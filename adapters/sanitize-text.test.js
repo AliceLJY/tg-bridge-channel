@@ -1,6 +1,6 @@
 // adapters/sanitize-text.test.js
 // stripMalformedToolCall:剥离模型偶发把工具调用吐成文本 XML 的 malformed 块。
-// fixture 取自 2026-06-16 mccode2 会话 8fdba35a 的真实 jsonl(line 65/147)。
+// fixture 取自 2026-06-16 实例 B 会话 8fdba35a 的真实 jsonl(line 65/147)。
 
 import { describe, expect, test } from "bun:test";
 import { stripMalformedToolCall } from "./sanitize-text.js";

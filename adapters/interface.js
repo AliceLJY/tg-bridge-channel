@@ -16,7 +16,7 @@ import { createAdapter as createGeminiAdapter } from "./gemini.js";
 
 // claude backend 按 env 切引擎(优先级 reply > print > pool > SDK):
 //   CLAUDE_REPLY_ENGINE=1 → cli-reply(常驻 --bg worker + authed op:reply,同会话不 fork = 零垃圾,且 worker 带
-//                           PTY → app/手机 remote control 可接管。2026-06-14 灰度中,先 mccode1 验;回滚=置 0)
+//                           PTY → app/手机 remote control 可接管。2026-06-14 灰度中,先在实例 A 验;回滚=置 0)
 //   CLAUDE_PRINT_ENGINE=1 → cli-print(--print --resume 同会话 append,零 fork、零垃圾,但 headless 无 TTY →
 //                           没 app/手机 RC、只终端 /resume 可接;适合不需要手机接管的 bot)
 //   CLAUDE_POOL_ENGINE=1  → cli-pool(--bg daemon fork + jsonl tail,2026-05-26 主线;每轮 fork 新会话 = 垃圾来源)

@@ -2,7 +2,7 @@
 // 剥离模型偶发的 "malformed tool call"——模型把工具调用吐成了文本 XML
 // (invoke/parameter/function_calls 那种标签),而不是发起真正的 tool_use。
 //
-// 背景(2026-06-16 实测,mccode2 会话 8fdba35a):Opus 4.8 在超长上下文 + 密集工具调用
+// 背景(2026-06-16 实测,实例 B 会话 8fdba35a):Opus 4.8 在超长上下文 + 密集工具调用
 // (如 content-alchemy 多 stage)下偶发把工具调用写成文本。CC harness 会检测到、注入
 // "Your tool call was malformed and could not be parsed. Please retry.",模型下一轮即
 // 重试成功 —— 任务本身能完成、工具真的执行了。但这段失败尝试落在 assistant 的 text 块里,

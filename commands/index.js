@@ -8,6 +8,7 @@ export function registerCommands(bot, deps) {
     DEFAULT_EFFORT,
     DEFAULT_VERBOSE,
     DISCUSS_CHAT_IDS,
+    HISTORY_BOTS,
     InlineKeyboard,
     a2aBus,
     adapters,
@@ -84,9 +85,17 @@ export function registerCommands(bot, deps) {
   // 副 bot 不暴露 /sessions /resume —— 强制走主力 bot 看完整聊天记录
   // owner 通过 plist env BRIDGE_OWNER=true 标记
   const IS_OWNER = process.env.BRIDGE_OWNER === "true";
+  // 指路文案从 config.shared.historyBots 读（backend → 主力 bot 用户名），源码里不写死任何实例名；
+  // 没配置时只说「另一个 bot」。只该填真正带 BRIDGE_OWNER=true 的实例——副 bot 自己也没有 /sessions，指过去没用。
+  const HISTORY_BOT_LABELS = { claude: "Claude", codex: "Codex", gemini: "Gemini", agy: "Agy", kimi: "Kimi" };
+  const configuredHistoryBots = Object.entries(HISTORY_BOTS || {})
+    .filter(([, name]) => typeof name === "string" && name.trim());
+  const historyBotLines = configuredHistoryBots.length > 0
+    ? configuredHistoryBots.map(([backend, name]) => `${HISTORY_BOT_LABELS[backend] || backend} 历史去 ${name.trim()}`)
+    : ["历史会话请到主力 bot（另一个 bot）查看；可在 config.shared.historyBots 里填它的用户名。"];
   const NON_OWNER_SESSIONS_HINT =
     "📋 /sessions 和 /resume 仅在主力 bot 启用。\n" +
-    "Claude 历史去 @ClCObest_bot 或 mccode1；Codex 历史去 mcodex1。";
+    historyBotLines.join("；") + (configuredHistoryBots.length > 0 ? "。" : "");
 
   // ── /help 命令 ──
   bot.command("help", async (ctx) => {

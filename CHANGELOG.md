@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.3.1] - 2026-09-06
+
+### Changed
+
+- Secondary bots now read primary bot usernames for the `/sessions` / `/resume` hint from the new optional `shared.historyBots` key instead of hard-coded values; when unset, the hint only says "another bot". Existing configurations remain valid.
+- Removed deployment-specific instance names and local paths from source comments; added `privacy-contract.test.js` so they cannot come back.
+
+### Docs
+
+- README_CN gained the Ecosystem section and both READMEs document `historyBots`.
+
 ## [0.3.0] - 2026-08-13
 
 ### Added

@@ -193,6 +193,7 @@ CLAUDE_POOL_ENGINE=1 bun run start --backend claude --config config.json
 - `backends.<claude|codex|gemini>.telegramBotToken` —— 各后端的 bot token。
 - `sharedContextBackend` —— `sqlite` 或 `redis`，跨 bot 共享记忆。
 - `outputRelayTrustedChatIds` —— 允许接收生成文件和图片附件的群聊。默认空；列入后也只接受 owner 本人触发的 turn。
+- `historyBots` —— 后端 → 主力 bot 用户名，如 `{ "claude": "@your_claude_bot" }`。副 bot（未带 `BRIDGE_OWNER=true` 启动）会隐藏 `/sessions` 和 `/resume`，用这项告诉用户历史在哪个 bot；不配置时只说「另一个 bot」。
 - `a2aEnabled` / `a2aPorts` —— 启用 A2A-TG 跨 bot 消息。
 
 ## 安全
@@ -215,6 +216,12 @@ CLAUDE_POOL_ENGINE=1 bun run start --backend claude --config config.json
 bun test
 bun run check:claude-contract
 ```
+
+## 生态
+
+- [telegram-ai-bridge](https://github.com/AliceLJY/telegram-ai-bridge) —— 最初的 Telegram 桥接，同样使用 A2A-TG 协议
+- [wechat-ai-bridge](https://github.com/AliceLJY/wechat-ai-bridge) —— 同一思路的微信版
+- [recallnest](https://github.com/AliceLJY/recallnest) —— 跨 Claude Code、Codex、Kimi、Antigravity 的共享记忆 MCP
 
 ## 许可
 

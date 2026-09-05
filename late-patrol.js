@@ -1,7 +1,7 @@
 // 迟到产出巡逻（2026-07-17，case 8d6eb755 + 4fb95516 后续）：
 // CC 在 turn 里用 run_in_background / Monitor / 子 agent 接力长任务时，bridge 在第一个 result 就收轮；
 // 后台任务完成后 harness 重新唤醒 CC、往【同一个 jsonl】续写最终报告——没人在读 = 用户永远看不到，
-// CC 还以为发了（2026-07-17 mccode1 盘点报告实况）。
+// CC 还以为发了（2026-07-17 实例 A 盘点报告实况）。
 // 本模块在 turn 正常收尾后对该 jsonl 保持低频巡逻：发现 turn 结束之后新写的 assistant 正文，等其
 // 稳定（出现 turn 收尾标记或静默 stabilizeMs）后作为"后台补报"补发到 TG；新一轮消息进来前先
 // sweepAndStop（把 pending 发完再停，且发生在新轮 op:reply 之前，绝不与活跃轮抢文件/重发）。

@@ -103,7 +103,7 @@ export async function selfHealStuckWorker(short, { list, kill, rosterHas, waitMs
 // 幽灵会话判定(2026-07-17,case 4fb95516):sessionId 有值但该会话的 jsonl 全局不存在 = 黑洞 ID
 // (fork 复活在"加载历史→写首行"窗口内被取消 / worker 卡死在落盘前,留下的悬空 ID)。--resume 它会
 // "干净退化成新会话"(静默),但下轮 bridge 又把新 fork 的 sid 存回,用户再取消又造一个黑洞 → 死循环
-// (2026-07-17 mccode2 实况:每条消息进黑洞,只能靠人重启)。主动识别:ghost=true → 调用方直接开
+// (2026-07-17 实例 B 实况:每条消息进黑洞,只能靠人重启)。主动识别:ghost=true → 调用方直接开
 // 新会话并在回复开头明说。
 // fail-open 用三态查找 probeSessionFile(codex review P1):"扫描失败"≠"确认不存在"——目录瞬时
 // 不可读时按"存在"处理照常 resume,只有全目录扫完确无文件才判幽灵,绝不因一次 IO 失败丢上下文。
