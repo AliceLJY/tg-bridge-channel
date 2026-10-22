@@ -64,7 +64,7 @@ status_line() {
 declare -a entries=()
 if [[ -d "$PLIST_DIR" ]]; then
   shopt -s nullglob
-  for plist in "$PLIST_DIR"/com.telegram-ai-bridge*.plist; do
+  for plist in "$PLIST_DIR"/com.tg-bridge-channel*.plist; do
     args="$(json_get_args "$plist" || true)"
     [[ -n "$args" ]] || continue
     IFS=$'\t' read -r _bash _script backend config_path <<< "$args"

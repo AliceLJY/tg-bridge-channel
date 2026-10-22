@@ -22,7 +22,7 @@ async function importTasks(dbPath) {
 
 describe("tasks retention", () => {
   test("cleanupOldTasks prunes old finished tasks while keeping recent rows", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "telegram-ai-bridge-tasks-"));
+    const dir = mkdtempSync(join(tmpdir(), "tg-bridge-channel-tasks-"));
     tempDirs.push(dir);
     const dbPath = join(dir, "tasks.db");
     const tasks = await importTasks(dbPath);

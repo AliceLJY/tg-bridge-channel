@@ -24,7 +24,7 @@ RUN mkdir -p files
 #   docker run -d --name tg-ai-bridge \
 #     -v $(pwd)/config.json:/app/config.json:ro \
 #     -v ~/.claude:/root/.claude \
-#     telegram-ai-bridge --backend claude
+#     tg-bridge-channel --backend claude
 
 ENTRYPOINT ["bun", "start.js", "start"]
 CMD ["--backend", "claude"]

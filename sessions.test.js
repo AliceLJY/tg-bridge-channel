@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-const tempDir = mkdtempSync(join(tmpdir(), "telegram-ai-bridge-sessions-"));
+const tempDir = mkdtempSync(join(tmpdir(), "tg-bridge-channel-sessions-"));
 process.env.SESSIONS_DB = join(tempDir, "sessions.db");
 
 const {

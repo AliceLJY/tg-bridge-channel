@@ -2,11 +2,11 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-TEMPLATE_PATH="$REPO_DIR/launchd/com.telegram-ai-bridge-log-rotation.plist.template"
+TEMPLATE_PATH="$REPO_DIR/launchd/com.tg-bridge-channel-log-rotation.plist.template"
 SCRIPT_PATH="$REPO_DIR/scripts/rotate-logs.sh"
-LABEL="com.telegram-ai-bridge-log-rotation"
+LABEL="com.tg-bridge-channel-log-rotation"
 PLIST_PATH="$HOME/Library/LaunchAgents/$LABEL.plist"
-LOG_DIR="$HOME/Library/Logs/telegram-ai-bridge"
+LOG_DIR="$HOME/Library/Logs/tg-bridge-channel"
 install_now=false
 
 usage() {

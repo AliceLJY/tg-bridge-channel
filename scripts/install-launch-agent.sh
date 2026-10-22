@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-TEMPLATE_PATH="$REPO_DIR/launchd/com.telegram-ai-bridge.plist.template"
+TEMPLATE_PATH="$REPO_DIR/launchd/com.tg-bridge-channel.plist.template"
 RUNNER_PATH="$REPO_DIR/scripts/run-launch-agent.sh"
 
 backend="claude"
@@ -22,7 +22,7 @@ Usage:
 
 Options:
   --backend <name>   claude | codex   (gemini: disabled)
-  --instance <name>  instance suffix, e.g. 2 -> com.telegram-ai-bridge-2
+  --instance <name>  instance suffix, e.g. 2 -> com.tg-bridge-channel-2
   --config <path>    config file path passed to start.js
   --label <label>    launchd label override
   --plist <path>     plist output path
@@ -63,18 +63,18 @@ PY
 
 default_label() {
   if [[ -n "$instance" ]]; then
-    printf 'com.telegram-ai-bridge-%s' "$instance"
+    printf 'com.tg-bridge-channel-%s' "$instance"
     return
   fi
   if [[ "$1" == "claude" ]]; then
-    printf 'com.telegram-ai-bridge'
+    printf 'com.tg-bridge-channel'
     return
   fi
-  printf 'com.telegram-ai-bridge-%s' "$1"
+  printf 'com.tg-bridge-channel-%s' "$1"
 }
 
 default_log_path() {
-  local log_dir="$HOME/Library/Logs/telegram-ai-bridge"
+  local log_dir="$HOME/Library/Logs/tg-bridge-channel"
   if [[ -n "$instance" ]]; then
     printf '%s/bridge-%s.log' "$log_dir" "$instance"
     return

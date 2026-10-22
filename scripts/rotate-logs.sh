@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LOG_DIR="${1:-$HOME/Library/Logs/telegram-ai-bridge}"
+LOG_DIR="${1:-$HOME/Library/Logs/tg-bridge-channel}"
 RETENTION_DAYS="${RETENTION_DAYS:-14}"
-TRASH_DIR="$HOME/.Trash/telegram-ai-bridge-log-rotation"
+TRASH_DIR="$HOME/.Trash/tg-bridge-channel-log-rotation"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
 mkdir -p "$LOG_DIR" "$TRASH_DIR"

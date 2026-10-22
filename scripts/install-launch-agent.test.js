@@ -12,7 +12,7 @@ afterEach(() => {
 });
 
 function makeTempHome() {
-  const home = mkdtempSync(join(tmpdir(), "telegram-ai-bridge-launchd-"));
+  const home = mkdtempSync(join(tmpdir(), "tg-bridge-channel-launchd-"));
   tempDirs.push(home);
   mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
   return home;
@@ -30,10 +30,10 @@ describe("install-launch-agent", () => {
     });
 
     expect(result.exitCode).toBe(0);
-    const plistPath = join(home, "Library", "LaunchAgents", "com.telegram-ai-bridge-codex.plist");
+    const plistPath = join(home, "Library", "LaunchAgents", "com.tg-bridge-channel-codex.plist");
     const plist = readFileSync(plistPath, "utf8");
 
-    expect(plist).toContain(join(home, "Library", "Logs", "telegram-ai-bridge", "bridge-codex.log"));
+    expect(plist).toContain(join(home, "Library", "Logs", "tg-bridge-channel", "bridge-codex.log"));
   });
 
   test("supports instance suffixes and explicit config paths", () => {
@@ -57,12 +57,12 @@ describe("install-launch-agent", () => {
     });
 
     expect(result.exitCode).toBe(0);
-    const plistPath = join(home, "Library", "LaunchAgents", "com.telegram-ai-bridge-2.plist");
+    const plistPath = join(home, "Library", "LaunchAgents", "com.tg-bridge-channel-2.plist");
     const plist = readFileSync(plistPath, "utf8");
 
-    expect(plist).toContain("<string>com.telegram-ai-bridge-2</string>");
+    expect(plist).toContain("<string>com.tg-bridge-channel-2</string>");
     expect(plist).toContain("<string>claude</string>");
     expect(plist).toContain(`<string>${configPath}</string>`);
-    expect(plist).toContain(join(home, "Library", "Logs", "telegram-ai-bridge", "bridge-2.log"));
+    expect(plist).toContain(join(home, "Library", "Logs", "tg-bridge-channel", "bridge-2.log"));
   });
 });

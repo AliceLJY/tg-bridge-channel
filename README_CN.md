@@ -178,7 +178,7 @@ CLAUDE_POOL_ENGINE=1 bun run start --backend claude --config config.json
 
 每个 bot 实例用自己的配置文件（`config.json`、`config-2.json`……），各自独立的 bot token 和会话数据库。常驻运行的 launch agent 模板在 `launchd/`。
 
-命名说明：本仓最初从 [telegram-ai-bridge](https://github.com/AliceLJY/telegram-ai-bridge) 分出，launchd 标签（`com.telegram-ai-bridge[-<实例>]`）、日志目录（`~/Library/Logs/telegram-ai-bridge/`）和 Docker 示例里的名字都沿用了旧名，保留是为了不让已经装好的实例变成孤儿。`Dockerfile` 和 `docker-compose.example.yml` 只是起点示例；作者本人一直用 launchd 跑，没用 Docker。
+为什么单独成仓：Agent SDK 那条路用不了 Claude 订阅，所以从 [telegram-ai-bridge](https://github.com/AliceLJY/telegram-ai-bridge) 的代码分出这个仓，改成通过 Claude Code 本地 CLI 驱动（先是 channel 引擎，后来是 pool，现在是 reply），走订阅计费。它的 launchd 标签、日志目录和 Docker 示例都用自己的 `tg-bridge-channel` 名字（`com.tg-bridge-channel[-<实例>]`、`~/Library/Logs/tg-bridge-channel/`），可以和 telegram-ai-bridge 装在同一台机器上，不会覆盖那个仓的 LaunchAgent。`Dockerfile` 和 `docker-compose.example.yml` 只是起点示例；作者本人一直用 launchd 跑，没用 Docker。
 
 ## 配置
 

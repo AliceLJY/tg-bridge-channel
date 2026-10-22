@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 function makeTempDir() {
-  const dir = mkdtempSync(join(tmpdir(), "telegram-ai-bridge-test-"));
+  const dir = mkdtempSync(join(tmpdir(), "tg-bridge-channel-test-"));
   tempDirs.push(dir);
   return dir;
 }

@@ -178,7 +178,7 @@ CLAUDE_POOL_ENGINE=1 bun run start --backend claude --config config.json
 
 Each bot instance uses its own config file (`config.json`, `config-2.json`, …) with a distinct bot token and sessions database. Launch agent templates for always-on operation live in `launchd/`.
 
-Naming note: this repo started as a fork of [telegram-ai-bridge](https://github.com/AliceLJY/telegram-ai-bridge), and the launchd labels (`com.telegram-ai-bridge[-<instance>]`), log directory (`~/Library/Logs/telegram-ai-bridge/`), and Docker example names still carry that name. They were kept so existing installs are not orphaned. The `Dockerfile` and `docker-compose.example.yml` are a starting point only; the author ran the bridge under launchd, not Docker.
+Why a separate repo: the Agent SDK route could not run on a Claude subscription, so this repo was split off from [telegram-ai-bridge](https://github.com/AliceLJY/telegram-ai-bridge)'s code and reworked to drive Claude Code through its local CLI instead (first the channel engine, then pool, now reply), which bills against the subscription. Its launchd labels, log directory, and Docker example use their own `tg-bridge-channel` names (`com.tg-bridge-channel[-<instance>]`, `~/Library/Logs/tg-bridge-channel/`), so it can be installed next to telegram-ai-bridge without overwriting that repo's LaunchAgents. The `Dockerfile` and `docker-compose.example.yml` are a starting point only; the author ran the bridge under launchd, not Docker.
 
 ## Configuration
 

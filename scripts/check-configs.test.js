@@ -12,7 +12,7 @@ afterEach(() => {
 });
 
 async function writeConfigPair({ firstSharedDb, secondSharedDb }) {
-  const dir = mkdtempSync(join(tmpdir(), "telegram-ai-bridge-configs-"));
+  const dir = mkdtempSync(join(tmpdir(), "tg-bridge-channel-configs-"));
   tempDirs.push(dir);
 
   const repoDir = import.meta.dir + "/..";
@@ -66,7 +66,7 @@ describe("check-configs", () => {
   });
 
   test("accepts existing configs that predate the optional output relay allowlist", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "telegram-ai-bridge-configs-"));
+    const dir = mkdtempSync(join(tmpdir(), "tg-bridge-channel-configs-"));
     tempDirs.push(dir);
     const repoDir = import.meta.dir + "/..";
     const config = await Bun.file(join(repoDir, "config.example.json")).json();

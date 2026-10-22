@@ -1,8 +1,8 @@
 services:
-  telegram-ai-bridge-claude:
+  tg-bridge-channel-claude:
     build:
       context: .
-    image: telegram-ai-bridge:local
+    image: tg-bridge-channel:local
     restart: unless-stopped
     command: ["--backend", "claude"]
     environment:
