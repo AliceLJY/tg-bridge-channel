@@ -32,6 +32,15 @@
 >
 > **请不要使用 `gemini` 后端。** 它复用 Gemini CLI 自己的 OAuth 凭证去访问 Google 内部的 Code Assist 端点，Google 条款明文禁止这种用法，并称可能因此暂停账号。另外 Google 已于 2026-06-18 对个人账号停止独立 `gemini` CLI 服务，该后端已无法完成认证。`backends.gemini.*` 配置项保留只为让旧配置能解析；第三方软件访问 Gemini 模型请用 Vertex AI 或 Google AI Studio API key。
 
+## 该不该用它？
+
+以下是 2026-10 的对比快照。官方功能变化很快，以官方文档为准。
+
+- **只想在手机上接着用本机的 Claude Code。** 用官方的 [Remote Control](https://code.claude.com/docs/en/remote-control)：Claude app 或 claude.ai/code 直接操控你机器上跑着的会话，server 模式（`claude remote-control`）可以同时挂多个会话。需要 Pro、Max、Team 或 Enterprise 登录。作者自己的 Claude Code bot 已于 2026 年 9 月迁到它上面。
+- **就想用 Telegram 当聊天窗口，一个会话够用。** Claude Code 官方的 [Channels](https://code.claude.com/docs/en/channels) 带 Telegram 插件（research preview），把你的消息推进一个已经开着的会话，靠配对码维护发送者白名单。
+- **想在 Telegram bot 后面接多种后端（Claude Code、Codex、Agy、Kimi）。** 用姊妹仓 [telegram-ai-bridge](https://github.com/AliceLJY/telegram-ai-bridge)，它是更通用的多后端桥。
+- **本仓适合剩下的这种情况：** 自托管的 Telegram 桥，每个 chat 绑定一个常驻、按订阅计费的 Claude Code 后台会话（Remote Control 里也能接管），可以同时跑多个 bot；并且你接受本地 CLI 引擎与 Claude Code 内部实现耦合、升级后可能要修。
+
 ## 架构
 
 ```mermaid
@@ -117,7 +126,7 @@ reply 独有的可调项：`CLI_REPLY_ROSTER_WAIT_MS`（默认 30 秒）是复�
 
 > 三套 CLI 引擎调用的都是 Claude CLI 明文提供的命令，但发现 reply 和判断 turn 结束还依赖一组**实测所得的本地实现契约**：stdout 中的 `backgrounded · <short-id>`、`~/.claude/daemon/roster.json`、`~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`、user/assistant 记录形态，以及"带可见正文的 `end_turn`"或 `system.turn_duration` 两种结束信号。reply 引擎还额外依赖 daemon 的 `control.sock`、其 `control.key` 鉴权，以及 `op:reply` 协议本身。这些都不是稳定的公开 API；即使 `claude --bg` 仍存在，Claude Code 升级也可能让 bridge 失配——这正是保留 pool 和 print 而不删除它们的原因。
 
-> 之前的交互式 channel-plugin 引擎（`CLAUDE_CHANNEL_ENGINE=1`）通过一个仿照 Claude Code 内置 fakechat channel 的本地 Model Context Protocol server 驱动。该引擎已于 2026 年 5 月被基于 Agent View 的 pool 引擎替代；旧实现见 git history（`adapters/claude-channel.js`、`agent/channel-marketplace/`）。
+> 之前的交互式 channel-plugin 引擎（`CLAUDE_CHANNEL_ENGINE=1`）通过一个仿照 Claude Code 内置 fakechat channel 的本地 Model Context Protocol server 驱动。该引擎已于 2026 年 5 月被基于 Agent View 的 pool 引擎替代；旧实现见 2026 年 5 月之前的 git history。
 
 ### Claude Code 兼容边界
 
@@ -139,21 +148,24 @@ bridge **不会捆绑或自动升级 Claude Code**。CLI 引擎读取 `CLAUDE_CL
 Claude Code 需独立安装，不包含在本包内。使用 Claude CLI 引擎时，请安装当前版本、用 `claude --version` 确认，并在升级现有 bridge 前核对上面的兼容边界。
 
 ```bash
-# 1. 安装依赖
+# 1. 建 bot：在 Telegram 里打开 @BotFather，发送 /newbot，复制它返回的 token
+#    还需要你自己的 Telegram 数字用户 ID，填进 ownerTelegramId
+
+# 2. 安装依赖
 bun install
 
-# 2. 配置
+# 3. 配置
 cp config.example.json config.json
-# 编辑 config.json：设置 ownerTelegramId 和 backends.<引擎>.telegramBotToken
+# 编辑 config.json：设置 ownerTelegramId 和 backends.claude.telegramBotToken
 
-# 3. 运行（默认 SDK 引擎）
-bun run start --backend claude --config config.json
+# 4. 用 reply 引擎运行（推荐）
+CLAUDE_REPLY_ENGINE=1 bun run start --backend claude --config config.json
 ```
 
-运行 **reply 引擎**（推荐；订阅计费的 background sessions，每 chat 一个常驻会话，可被 Claude 的 remote control 接管）：
+reply 引擎为每个 chat 保持一个订阅计费的后台会话，可被 Claude 的 Remote Control 接管。不带引擎开关时用默认的 SDK 引擎：
 
 ```bash
-CLAUDE_REPLY_ENGINE=1 bun run start --backend claude --config config.json
+bun run start --backend claude --config config.json
 ```
 
 如果 Claude Code 升级后 daemon 的 `op:reply` 协议失配，回退到 pool 引擎——同样的计费路径，代价是每轮 fork 一个会话记录：
@@ -165,6 +177,8 @@ CLAUDE_POOL_ENGINE=1 bun run start --backend claude --config config.json
 ## 多实例
 
 每个 bot 实例用自己的配置文件（`config.json`、`config-2.json`……），各自独立的 bot token 和会话数据库。常驻运行的 launch agent 模板在 `launchd/`。
+
+命名说明：本仓最初从 [telegram-ai-bridge](https://github.com/AliceLJY/telegram-ai-bridge) 分出，launchd 标签（`com.telegram-ai-bridge[-<实例>]`）、日志目录（`~/Library/Logs/telegram-ai-bridge/`）和 Docker 示例里的名字都沿用了旧名，保留是为了不让已经装好的实例变成孤儿。`Dockerfile` 和 `docker-compose.example.yml` 只是起点示例；作者本人一直用 launchd 跑，没用 Docker。
 
 ## 配置
 
@@ -202,7 +216,7 @@ bun run check:claude-contract
 
 - [telegram-ai-bridge](https://github.com/AliceLJY/telegram-ai-bridge) —— 最初的 Telegram 桥接，同样使用 A2A-TG 协议
 - [wechat-ai-bridge](https://github.com/AliceLJY/wechat-ai-bridge) —— 同一思路的微信版
-- [recallnest](https://github.com/AliceLJY/recallnest) —— 跨 Claude Code、Codex、Kimi、Antigravity 的共享记忆 MCP
+- [recallnest](https://github.com/AliceLJY/recallnest) —— 任何 MCP 客户端都能接的共享记忆层
 
 ## 许可
 

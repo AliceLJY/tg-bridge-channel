@@ -32,6 +32,15 @@ The **primary, battle-tested path** is single-agent private-chat control of Clau
 >
 > **Do not use the `gemini` backend.** It reuses the Gemini CLI's own OAuth credentials to reach Google's internal Code Assist endpoint, which Google's terms explicitly prohibit and say may get your account suspended. Google also retired the personal-account `gemini` CLI on 2026-06-18, so the backend can no longer authenticate. The `backends.gemini.*` keys remain only so old configs parse; to reach Gemini models from third-party software, use a Vertex AI or Google AI Studio API key.
 
+## Should you use this?
+
+Snapshot as of 2026-10. The official features move fast, so check their docs for current behavior.
+
+- **You just want to reach your local Claude Code from your phone.** Use the official [Remote Control](https://code.claude.com/docs/en/remote-control): the Claude app or claude.ai/code drives a session running on your machine, and server mode (`claude remote-control`) can host many concurrent sessions. It needs a Pro, Max, Team, or Enterprise login. The author's own Claude Code bots moved to it in September 2026.
+- **You want Telegram itself as the chat window, for one session.** Claude Code's official [Channels](https://code.claude.com/docs/en/channels) include a Telegram plugin (research preview) that pushes your messages into an already-running session, with a pairing-based sender allowlist.
+- **You want several backends (Claude Code, Codex, Agy, Kimi) behind Telegram bots.** The sister repo [telegram-ai-bridge](https://github.com/AliceLJY/telegram-ai-bridge) is the broader multi-backend bridge.
+- **This repo fits the case left over:** a self-hosted Telegram bridge where each chat owns a persistent, subscription-billed Claude Code background session (also reachable from Remote Control), several bots can run side by side, and you accept that the local CLI engines couple to Claude Code internals and may need a fix after an upgrade.
+
 ## Architecture
 
 ```mermaid
@@ -139,21 +148,24 @@ The synthetic local-contract fixtures dated 2026-07-17 were re-run against Claud
 Claude Code is installed separately from this package. For a Claude CLI engine, install a current Claude Code release, verify it with `claude --version`, and check the compatibility boundary above before upgrading an existing bridge.
 
 ```bash
-# 1. install dependencies
+# 1. create a bot: in Telegram, open @BotFather, send /newbot, copy the token it returns
+#    you also need your own numeric Telegram user ID for ownerTelegramId
+
+# 2. install dependencies
 bun install
 
-# 2. configure
+# 3. configure
 cp config.example.json config.json
-# edit config.json: set ownerTelegramId and backends.<engine>.telegramBotToken
+# edit config.json: set ownerTelegramId and backends.claude.telegramBotToken
 
-# 3. run (default SDK engine)
-bun run start --backend claude --config config.json
+# 4. run with the reply engine (recommended)
+CLAUDE_REPLY_ENGINE=1 bun run start --backend claude --config config.json
 ```
 
-To run the **reply engine** (recommended; subscription-billed background sessions, one persistent session per chat, reachable from Claude's remote control):
+The reply engine keeps one subscription-billed background session per chat, reachable from Claude's Remote Control. Without an engine flag the bridge uses the default SDK engine:
 
 ```bash
-CLAUDE_REPLY_ENGINE=1 bun run start --backend claude --config config.json
+bun run start --backend claude --config config.json
 ```
 
 If the daemon's `op:reply` protocol breaks after a Claude Code upgrade, fall back to the pool engine — same billing path, at the cost of one forked transcript per turn:
@@ -165,6 +177,8 @@ CLAUDE_POOL_ENGINE=1 bun run start --backend claude --config config.json
 ## Multi-instance
 
 Each bot instance uses its own config file (`config.json`, `config-2.json`, …) with a distinct bot token and sessions database. Launch agent templates for always-on operation live in `launchd/`.
+
+Naming note: this repo started as a fork of [telegram-ai-bridge](https://github.com/AliceLJY/telegram-ai-bridge), and the launchd labels (`com.telegram-ai-bridge[-<instance>]`), log directory (`~/Library/Logs/telegram-ai-bridge/`), and Docker example names still carry that name. They were kept so existing installs are not orphaned. The `Dockerfile` and `docker-compose.example.yml` are a starting point only; the author ran the bridge under launchd, not Docker.
 
 ## Configuration
 
@@ -202,7 +216,7 @@ bun run check:claude-contract
 
 - [telegram-ai-bridge](https://github.com/AliceLJY/telegram-ai-bridge) — original Telegram bridge using A2A-TG protocol
 - [wechat-ai-bridge](https://github.com/AliceLJY/wechat-ai-bridge) — same idea on WeChat
-- [recallnest](https://github.com/AliceLJY/recallnest) — shared memory MCP across Claude Code, Codex, Kimi and Antigravity
+- [recallnest](https://github.com/AliceLJY/recallnest) — one shared memory layer for any MCP client
 
 ## License
 
