@@ -19,6 +19,10 @@ const FORBIDDEN_PATTERNS = [
   "ClCO" + "best",
   // 作者本机的 launchd label 前缀
   "com\\." + "anxianjingya",
+  // 作者本机的私有目录名
+  "hermes" + "-shared",
+  "material" + "-goldmine",
+  "AI" + "产出",
   // 真实 home 路径；放过通用占位符 /Users/you、/Users/user、/Users/x(xx)、/Users/<name>
   "/Users" + "/(?!you\\b|user\\b|x{1,3}\\b|<)",
 ];

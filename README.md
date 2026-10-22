@@ -14,6 +14,8 @@
 
 </div>
 
+> **Status:** stable · low-frequency maintenance · last verified 2026-10. The local CLI engines are coupled to Claude Code internals and had their contract fixtures last re-run against Claude Code 2.1.229 (2026-08-13); newer Claude Code releases may need a fix.
+
 ---
 
 ## What it is
@@ -26,27 +28,9 @@
 
 The **primary, battle-tested path** is single-agent private-chat control of Claude Code via the reply engine below (the pool engine held that role until June 2026 and is kept as the rollback path). Parallel sessions and A2A collaboration work but are experimental; the `local-agent` executor is a compatibility layer that sees far less real-world use. The `gemini` backend is retired for personal accounts — see the note below.
 
-> **Do not use the `gemini` backend. This is an account-safety issue, not just a dead feature.**
+> **Codex** support assumes you have your own Codex subscription and CLI login. The author no longer runs Codex day-to-day, so that path is exercised less often than Claude Code.
 >
-> That adapter reads `~/.gemini/oauth_creds.json` and reuses the Gemini CLI's own OAuth
-> client to reach the internal Code Assist endpoint `cloudcode-pa.googleapis.com`.
-> Google's FAQ names this exact pattern: *"Using third-party software, tools, or services
-> to harvest or piggyback on Gemini CLI's OAuth authentication to access our backend
-> services is a direct violation of our applicable terms and policies"*, and says it
-> *"may be grounds for immediate suspension or termination of your account."* Paid
-> subscribers have reportedly lost access over it. **This applies regardless of your plan
-> tier — the prohibited thing is the mechanism, not the account type.**
->
-> Separately, Google retired the standalone `gemini` CLI for personal accounts on
-> 2026-06-18, so `oauth_creds.json` is no longer produced and the backend cannot
-> authenticate there either. The successor Antigravity CLI (`agy`) does not write a
-> drop-in replacement.
->
-> The supported way for third-party software to reach Gemini models is a **Vertex AI or
-> Google AI Studio API key**. The `backends.gemini.*` keys remain only so existing configs
-> parse; do not point them at CLI OAuth credentials.
->
-> Claude and Codex backends are unaffected.
+> **Do not use the `gemini` backend.** It reuses the Gemini CLI's own OAuth credentials to reach Google's internal Code Assist endpoint, which Google's terms explicitly prohibit and say may get your account suspended. Google also retired the personal-account `gemini` CLI on 2026-06-18, so the backend can no longer authenticate. The `backends.gemini.*` keys remain only so old configs parse; to reach Gemini models from third-party software, use a Vertex AI or Google AI Studio API key.
 
 ## Architecture
 
@@ -56,12 +40,10 @@ flowchart TB
         U["Owner<br/>only ownerTelegramId"]
         BC["claude bot"]
         BX["codex bot"]
-        BG["gemini bot"]
     end
 
     U <--> BC
     U <--> BX
-    U <--> BG
 
     subgraph bridge["tg-bridge-channel · Bun"]
         ROUTER["Router + per-chat prefs<br/>/model /effort /dir · Stop"]
@@ -76,7 +58,6 @@ flowchart TB
 
     BC --> ROUTER
     BX --> ROUTER
-    BG --> ROUTER
     ROUTER --> ENGINE
     ENGINE -->|"default"| SDK
     ENGINE -->|"CLAUDE_POOL_ENGINE=1"| POOL
@@ -88,7 +69,6 @@ flowchart TB
     PRINT -->|"claude --print stream-json"| CC
     REPLY -->|"persistent --bg + local op:reply"| CC
     ROUTER --> CX["Codex"]
-    ROUTER --> GM["Gemini"]
 
     CC -.->|"tail transcript .jsonl"| POOL
     CC -.->|"stream-json result"| PRINT
@@ -97,7 +77,6 @@ flowchart TB
     ROUTER <--> CTX
 
     BC <-.->|"A2A-TG envelope (experimental)"| BX
-    BX <-.-> BG
 ```
 
 ## Engine layer

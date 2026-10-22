@@ -14,6 +14,8 @@
 
 </div>
 
+> **状态：** 稳定 · 低频维护 · 2026-10 最后核验。本地 CLI 引擎与 Claude Code 内部实现耦合，契约 fixture 最后一次在 Claude Code 2.1.229 上重跑（2026-08-13）；Claude Code 后续发版可能需要跟着修。
+
 ---
 
 ## 这是什么
@@ -26,25 +28,9 @@
 
 **主路径**（经过日常实际使用打磨的部分）是私聊单代理控制 Claude Code + 下方的 reply 引擎（2026 年 6 月之前这个位置是 pool 引擎，现保留作回滚路径）。并行会话和 A2A 协作可用但属实验性质；`local-agent` 执行器是兼容层，实际使用频率低得多。Gemini 后端对个人账号已停用——见下方说明。
 
-> **请不要使用 `gemini` 后端。这是账号安全问题，不只是功能失效。**
+> **Codex** 支持的前提是你自己有 Codex 订阅并已在 CLI 登录。作者本人已不在日常使用 Codex，这条路径的实际使用比 Claude Code 少得多。
 >
-> 该适配器读取 `~/.gemini/oauth_creds.json`，复用 Gemini CLI 自己的 OAuth client
-> 去访问 Code Assist 内部端点 `cloudcode-pa.googleapis.com`。Google 官方 FAQ 点的
-> 正是这种用法：*"Using third-party software, tools, or services to harvest or piggyback
-> on Gemini CLI's OAuth authentication to access our backend services is a direct
-> violation of our applicable terms and policies"*，并称其 *"may be grounds for immediate
-> suspension or termination of your account"*（可构成立即暂停或终止账号的理由）。
-> 已有付费订阅用户因此失去访问权限的报告。**这与套餐等级无关——被禁的是这个机制本身，
-> 不是账号类型。**
->
-> 另外，Google 已于 2026-06-18 对个人账号停止独立 `gemini` CLI 服务，
-> `oauth_creds.json` 不再产生，该后端在个人账号上也已无法完成认证。
-> 继任者 Antigravity CLI（`agy`）不会写出可直接替代的凭证文件。
->
-> 第三方软件访问 Gemini 模型的受支持方式是 **Vertex AI 或 Google AI Studio API key**。
-> `backends.gemini.*` 配置项保留只为让既有配置能解析，不要把 CLI 的 OAuth 凭证填进去。
->
-> Claude 与 Codex 后端不受影响。
+> **请不要使用 `gemini` 后端。** 它复用 Gemini CLI 自己的 OAuth 凭证去访问 Google 内部的 Code Assist 端点，Google 条款明文禁止这种用法，并称可能因此暂停账号。另外 Google 已于 2026-06-18 对个人账号停止独立 `gemini` CLI 服务，该后端已无法完成认证。`backends.gemini.*` 配置项保留只为让旧配置能解析；第三方软件访问 Gemini 模型请用 Vertex AI 或 Google AI Studio API key。
 
 ## 架构
 
@@ -54,12 +40,10 @@ flowchart TB
         U["机主<br/>仅 ownerTelegramId"]
         BC["claude bot"]
         BX["codex bot"]
-        BG["gemini bot"]
     end
 
     U <--> BC
     U <--> BX
-    U <--> BG
 
     subgraph bridge["tg-bridge-channel · Bun"]
         ROUTER["路由 + 每会话偏好<br/>/model /effort /dir · Stop"]
@@ -74,7 +58,6 @@ flowchart TB
 
     BC --> ROUTER
     BX --> ROUTER
-    BG --> ROUTER
     ROUTER --> ENGINE
     ENGINE -->|"默认"| SDK
     ENGINE -->|"CLAUDE_POOL_ENGINE=1"| POOL
@@ -86,7 +69,6 @@ flowchart TB
     PRINT -->|"claude --print stream-json"| CC
     REPLY -->|"常驻 --bg + 本地 op:reply"| CC
     ROUTER --> CX["Codex"]
-    ROUTER --> GM["Gemini"]
 
     CC -.->|"tail 转录 .jsonl"| POOL
     CC -.->|"stream-json result"| PRINT
@@ -95,7 +77,6 @@ flowchart TB
     ROUTER <--> CTX
 
     BC <-.->|"A2A-TG 信封协议（实验性）"| BX
-    BX <-.-> BG
 ```
 
 ## 引擎层

@@ -32,8 +32,8 @@ call
   // —— 真实 line 147:几乎纯 malformed(开头就是 call、无实质叙述)→ 应整块丢弃 ——
   const REAL_LINE147 = `call
 <invoke name="Bash">
-<parameter name="command">grep -rinE "效率|混乱" ~/Downloads/hermes-shared/material-goldmine/ | head -12</parameter>
-<parameter name="description">扫燃料仓留痕</parameter>
+<parameter name="command">grep -rinE "效率|混乱" ~/notes/drafts/ | head -12</parameter>
+<parameter name="description">扫素材目录</parameter>
 </invoke>`;
 
   test("纯 malformed 块 → 返回空串(调用点据此整块跳过)", () => {
