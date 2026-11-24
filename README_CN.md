@@ -156,7 +156,7 @@ bun install
 
 # 3. 配置
 cp config.example.json config.json
-# 编辑 config.json：设置 ownerTelegramId 和 backends.claude.telegramBotToken
+# 编辑 config.json：设置 ownerTelegramId 和 backends.claude.telegramBotToken，按需修改 shared.cwd（默认 "." 即当前目录）
 
 # 4. 用 reply 引擎运行（推荐）
 CLAUDE_REPLY_ENGINE=1 bun run start --backend claude --config config.json

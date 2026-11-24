@@ -156,7 +156,7 @@ bun install
 
 # 3. configure
 cp config.example.json config.json
-# edit config.json: set ownerTelegramId and backends.claude.telegramBotToken
+# edit config.json: set ownerTelegramId, backends.claude.telegramBotToken, and shared.cwd (defaults to ".")
 
 # 4. run with the reply engine (recommended)
 CLAUDE_REPLY_ENGINE=1 bun run start --backend claude --config config.json

@@ -1,7 +1,7 @@
 {
   "shared": {
     "ownerTelegramId": "123456789",
-    "cwd": "/Users/you",
+    "cwd": ".",
     "httpProxy": "",
     "defaultVerboseLevel": 1,
     "executor": "direct",
