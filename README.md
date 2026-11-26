@@ -147,7 +147,13 @@ The synthetic local-contract fixtures dated 2026-07-17 were re-run against Claud
 
 Claude Code is installed separately from this package. For a Claude CLI engine, install a current Claude Code release, verify it with `claude --version`, and check the compatibility boundary above before upgrading an existing bridge.
 
+You also need [Bun](https://bun.sh) 1.3.9 or newer (the bridge runs on Bun, not Node).
+
 ```bash
+# 0. get the code
+git clone https://github.com/AliceLJY/tg-bridge-channel.git
+cd tg-bridge-channel
+
 # 1. create a bot: in Telegram, open @BotFather, send /newbot, copy the token it returns
 #    you also need your own numeric Telegram user ID for ownerTelegramId
 
@@ -157,6 +163,10 @@ bun install
 # 3. configure
 cp config.example.json config.json
 # edit config.json: set ownerTelegramId, backends.claude.telegramBotToken, and shared.cwd (defaults to ".")
+
+# 3b. optional: validate config.json offline before starting (no Telegram connection);
+#     it prints "[check] ok", or a numbered list of fields to fix
+bun run check --backend claude --config config.json
 
 # 4. run with the reply engine (recommended)
 CLAUDE_REPLY_ENGINE=1 bun run start --backend claude --config config.json

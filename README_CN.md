@@ -147,7 +147,13 @@ bridge **不会捆绑或自动升级 Claude Code**。CLI 引擎读取 `CLAUDE_CL
 
 Claude Code 需独立安装，不包含在本包内。使用 Claude CLI 引擎时，请安装当前版本、用 `claude --version` 确认，并在升级现有 bridge 前核对上面的兼容边界。
 
+另外需要先装 [Bun](https://bun.sh) 1.3.9 或更新版本（bridge 跑在 Bun 上，不是 Node）。
+
 ```bash
+# 0. 拿到代码
+git clone https://github.com/AliceLJY/tg-bridge-channel.git
+cd tg-bridge-channel
+
 # 1. 建 bot：在 Telegram 里打开 @BotFather，发送 /newbot，复制它返回的 token
 #    还需要你自己的 Telegram 数字用户 ID，填进 ownerTelegramId
 
@@ -157,6 +163,10 @@ bun install
 # 3. 配置
 cp config.example.json config.json
 # 编辑 config.json：设置 ownerTelegramId 和 backends.claude.telegramBotToken，按需修改 shared.cwd（默认 "." 即当前目录）
+
+# 3b. 可选：启动前先离线校验 config.json（不连 Telegram）；
+#     通过时打印 "[check] ok"，不通过时逐条列出要改的字段
+bun run check --backend claude --config config.json
 
 # 4. 用 reply 引擎运行（推荐）
 CLAUDE_REPLY_ENGINE=1 bun run start --backend claude --config config.json
